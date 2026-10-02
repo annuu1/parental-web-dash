@@ -18,7 +18,11 @@ import {
   Sliders,
   Terminal,
   Activity,
-  AlertTriangle,
+  Send,
+  Camera,
+  Mic,
+  Monitor,
+  CheckCircle,
 } from 'lucide-react';
 
 interface DeviceDetail {
@@ -38,7 +42,19 @@ interface DeviceDetail {
   };
   settings: {
     syncIntervalMinutes: number;
-    locationTrackingEnabled: boolean;
+    telegramBotToken: string;
+    telegramChatId: string;
+    isMonitoringActive: boolean;
+    sendScreenshot: boolean;
+    screenshotInterval: number;
+    sendLocation: boolean;
+    locationInterval: number;
+    sendAudio: boolean;
+    audioDuration: number;
+    audioScreenOff: boolean;
+    sendCamera: boolean;
+    cameraInterval: number;
+    cameraScreenOff: boolean;
     lockMessage?: string;
   };
   lastSyncAt?: string;
@@ -55,15 +71,6 @@ interface CommandItem {
   executedAt?: string;
 }
 
-interface TelemetryItem {
-  _id: string;
-  batteryLevel: number;
-  isCharging: boolean;
-  latitude?: number;
-  longitude?: number;
-  recordedAt: string;
-}
-
 export default function DeviceDetailPage({
   params,
 }: {
@@ -74,15 +81,27 @@ export default function DeviceDetailPage({
 
   const [device, setDevice] = useState<DeviceDetail | null>(null);
   const [commands, setCommands] = useState<CommandItem[]>([]);
-  const [telemetry, setTelemetry] = useState<TelemetryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Form states
   const [deviceName, setDeviceName] = useState('');
   const [syncInterval, setSyncInterval] = useState(15);
-  const [locationEnabled, setLocationEnabled] = useState(true);
+  const [telegramBotToken, setTelegramBotToken] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [isMonitoringActive, setIsMonitoringActive] = useState(true);
+  const [sendScreenshot, setSendScreenshot] = useState(true);
+  const [screenshotInterval, setScreenshotInterval] = useState(10);
+  const [sendLocation, setSendLocation] = useState(true);
+  const [locationInterval, setLocationInterval] = useState(10);
+  const [sendAudio, setSendAudio] = useState(false);
+  const [audioDuration, setAudioDuration] = useState(60);
+  const [audioScreenOff, setAudioScreenOff] = useState(false);
+  const [sendCamera, setSendCamera] = useState(false);
+  const [cameraInterval, setCameraInterval] = useState(10);
+  const [cameraScreenOff, setCameraScreenOff] = useState(false);
   const [lockMessage, setLockMessage] = useState('');
 
   const fetchDeviceData = async () => {
@@ -95,12 +114,24 @@ export default function DeviceDetailPage({
       const data = await res.json();
       setDevice(data.device);
       setCommands(data.recentCommands || []);
-      setTelemetry(data.telemetryHistory || []);
 
       if (data.device) {
-        setDeviceName(data.device.deviceName);
-        setSyncInterval(data.device.settings?.syncIntervalMinutes || 15);
-        setLocationEnabled(data.device.settings?.locationTrackingEnabled ?? true);
+        setDeviceName(data.device.deviceName || '');
+        const s = data.device.settings || {};
+        setSyncInterval(s.syncIntervalMinutes || 15);
+        setTelegramBotToken(s.telegramBotToken || '');
+        setTelegramChatId(s.telegramChatId || '');
+        setIsMonitoringActive(s.isMonitoringActive ?? true);
+        setSendScreenshot(s.sendScreenshot ?? true);
+        setScreenshotInterval(s.screenshotInterval || 10);
+        setSendLocation(s.sendLocation ?? true);
+        setLocationInterval(s.locationInterval || 10);
+        setSendAudio(s.sendAudio ?? false);
+        setAudioDuration(s.audioDuration || 60);
+        setAudioScreenOff(s.audioScreenOff ?? false);
+        setSendCamera(s.sendCamera ?? false);
+        setCameraInterval(s.cameraInterval || 10);
+        setCameraScreenOff(s.cameraScreenOff ?? false);
         setLockMessage(data.device.lockMessage || 'This device is locked by parental control.');
       }
     } catch (err) {
@@ -119,6 +150,7 @@ export default function DeviceDetailPage({
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSaveSuccess(false);
     try {
       const res = await fetch(`/api/dashboard/devices/${id}/settings`, {
         method: 'PATCH',
@@ -126,7 +158,19 @@ export default function DeviceDetailPage({
         body: JSON.stringify({
           deviceName,
           syncIntervalMinutes: Number(syncInterval),
-          locationTrackingEnabled: locationEnabled,
+          telegramBotToken,
+          telegramChatId,
+          isMonitoringActive,
+          sendScreenshot,
+          screenshotInterval: Number(screenshotInterval),
+          sendLocation,
+          locationInterval: Number(locationInterval),
+          sendAudio,
+          audioDuration: Number(audioDuration),
+          audioScreenOff,
+          sendCamera,
+          cameraInterval: Number(cameraInterval),
+          cameraScreenOff,
           lockMessage,
         }),
       });
@@ -135,7 +179,8 @@ export default function DeviceDetailPage({
         throw new Error('Failed to save settings');
       }
 
-      alert('Settings saved and queued for sync!');
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 4000);
       fetchDeviceData();
     } catch (err: any) {
       alert(err.message);
@@ -216,7 +261,7 @@ export default function DeviceDetailPage({
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-8">
         {/* Top Status Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Battery */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg flex items-center justify-between">
             <div>
@@ -236,9 +281,9 @@ export default function DeviceDetailPage({
           {/* Lock Status */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg flex items-center justify-between">
             <div>
-              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">State</span>
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Lock State</span>
               <span className={`text-2xl font-bold ${device.isLocked ? 'text-amber-400' : 'text-emerald-400'}`}>
-                {device.isLocked ? 'Locked' : 'Unlocked'}
+                {device.isLocked ? 'Locked' : 'Normal'}
               </span>
               <span className="text-xs text-slate-500 block mt-0.5">Screen Restriction</span>
             </div>
@@ -252,11 +297,11 @@ export default function DeviceDetailPage({
           {/* Sync Frequency */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg flex items-center justify-between">
             <div>
-              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Sync Interval</span>
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Sync Heartbeat</span>
               <span className="text-2xl font-bold text-indigo-400">
                 {device.settings?.syncIntervalMinutes || 15}m
               </span>
-              <span className="text-xs text-slate-500 block mt-0.5">WorkManager Sleep</span>
+              <span className="text-xs text-slate-500 block mt-0.5">Battery Saver Sleep</span>
             </div>
             <Clock className="w-8 h-8 text-indigo-400" />
           </div>
@@ -264,7 +309,7 @@ export default function DeviceDetailPage({
           {/* GPS Location */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg flex items-center justify-between">
             <div>
-              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Location</span>
+              <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">GPS Location</span>
               {hasLocation ? (
                 <a
                   href={`https://www.google.com/maps?q=${device.lastLocation?.latitude},${device.lastLocation?.longitude}`}
@@ -286,53 +331,142 @@ export default function DeviceDetailPage({
           </div>
         </div>
 
-        {/* Action Controls & Settings */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Quick Actions Panel */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Activity className="w-4 h-4 text-indigo-400" />
-              Remote Actions (REST Queue)
-            </h2>
-            <p className="text-xs text-slate-400">
-              Commands are executed on the device during its next sync heartbeat (~{device.settings?.syncIntervalMinutes || 15}m).
-            </p>
+        {/* Remote Settings Form */}
+        <form onSubmit={handleSaveSettings} className="space-y-6">
+          {saveSuccess && (
+            <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm rounded-xl flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 shrink-0" />
+              <span>Settings saved! They will be applied on the child device during the next heartbeat sync.</span>
+            </div>
+          )}
 
-            <div className="space-y-4">
-              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* 1. Telegram Dispatch Configuration */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Send className="w-4 h-4 text-sky-400" />
+                Telegram Dispatch Configuration
+              </h2>
+              <p className="text-xs text-slate-400">
+                Configure your Telegram bot credentials here. The child app downloads these automatically — no manual input on the phone needed!
+              </p>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
+                  Telegram Bot Token
+                </label>
+                <input
+                  type="text"
+                  value={telegramBotToken}
+                  onChange={(e) => setTelegramBotToken(e.target.value)}
+                  placeholder="e.g. 123456789:ABCdefGhIJKlmNoPQRstuvWXyz"
+                  className="w-full px-3.5 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
+                  Target Chat ID
+                </label>
+                <input
+                  type="text"
+                  value={telegramChatId}
+                  onChange={(e) => setTelegramChatId(e.target.value)}
+                  placeholder="e.g. 987654321"
+                  className="w-full px-3.5 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-white">Screen Lock</h3>
-                  <p className="text-xs text-slate-400">
-                    {device.isLocked ? 'Screen is locked. Click to release.' : 'Lock screen on child phone.'}
-                  </p>
+                  <span className="text-white font-medium block">Monitoring Master Switch</span>
+                  <span>Enable or pause all reporting loops</span>
                 </div>
+                <input
+                  type="checkbox"
+                  checked={isMonitoringActive}
+                  onChange={(e) => setIsMonitoringActive(e.target.checked)}
+                  className="w-5 h-5 accent-indigo-500 rounded"
+                />
+              </div>
+            </div>
+
+            {/* 2. Device Alias & Lock Screen */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                General Settings & Screen Lock
+              </h2>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
+                  Device Alias
+                </label>
+                <input
+                  type="text"
+                  value={deviceName}
+                  onChange={(e) => setDeviceName(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
+                  Heartbeat Sync Frequency: {syncInterval} minutes
+                </label>
+                <input
+                  type="range"
+                  min={5}
+                  max={120}
+                  step={5}
+                  value={syncInterval}
+                  onChange={(e) => setSyncInterval(Number(e.target.value))}
+                  className="w-full accent-indigo-500"
+                />
+                <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                  <span>5m (Fast)</span>
+                  <span>15m (Recommended)</span>
+                  <span>120m (Max Battery)</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
+                  Lock Screen Message
+                </label>
+                <input
+                  type="text"
+                  value={lockMessage}
+                  onChange={(e) => setLockMessage(e.target.value)}
+                  placeholder="Message displayed when screen is locked"
+                  className="w-full px-3.5 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
                 <button
+                  type="button"
                   onClick={() =>
                     handleQueueCommand(device.isLocked ? 'UNLOCK_DEVICE' : 'LOCK_DEVICE', {
                       message: lockMessage,
                     })
                   }
                   disabled={actionLoading}
-                  className={`py-2 px-4 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
+                  className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition ${
                     device.isLocked
                       ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                       : 'bg-amber-600 hover:bg-amber-500 text-white'
                   }`}
                 >
                   {device.isLocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-                  <span>{device.isLocked ? 'Send Unlock' : 'Send Lock'}</span>
+                  <span>{device.isLocked ? 'Send Unlock Command' : 'Send Lock Command'}</span>
                 </button>
-              </div>
 
-              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-white">Request Fresh Location</h3>
-                  <p className="text-xs text-slate-400">Forces GPS fix on next sync heartbeat.</p>
-                </div>
                 <button
+                  type="button"
                   onClick={() => handleQueueCommand('PING_LOCATION')}
                   disabled={actionLoading}
-                  className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 transition"
+                  className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 transition"
                 >
                   <MapPin className="w-4 h-4 text-indigo-400" />
                   <span>Request GPS</span>
@@ -341,80 +475,160 @@ export default function DeviceDetailPage({
             </div>
           </div>
 
-          {/* Remote Settings Panel */}
-          <form onSubmit={handleSaveSettings} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
+          {/* 3. Monitoring Feature Toggles & Intervals */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
             <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-indigo-400" />
-              Device Configuration
+              <Activity className="w-4 h-4 text-emerald-400" />
+              Monitoring Modules & Intervals
             </h2>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
-                Device Alias
-              </label>
-              <input
-                type="text"
-                value={deviceName}
-                onChange={(e) => setDeviceName(e.target.value)}
-                className="w-full px-3.5 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Screenshots */}
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-white flex items-center gap-1.5">
+                    <Monitor className="w-4 h-4 text-indigo-400" /> Screenshots
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={sendScreenshot}
+                    onChange={(e) => setSendScreenshot(e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">
+                    Interval: {screenshotInterval}s
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={3600}
+                    value={screenshotInterval}
+                    onChange={(e) => setScreenshotInterval(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200"
+                  />
+                </div>
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
-                Sync Frequency (Minutes): {syncInterval}m
-              </label>
-              <input
-                type="range"
-                min={5}
-                max={120}
-                step={5}
-                value={syncInterval}
-                onChange={(e) => setSyncInterval(Number(e.target.value))}
-                className="w-full accent-indigo-500"
-              />
-              <div className="flex justify-between text-[10px] text-slate-500 mt-1">
-                <span>5m (More frequent)</span>
-                <span>15m (Balanced)</span>
-                <span>120m (Max Battery)</span>
+              {/* Location GPS */}
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-white flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-red-400" /> GPS Tracking
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={sendLocation}
+                    onChange={(e) => setSendLocation(e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">
+                    Interval: {locationInterval} mins
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={locationInterval}
+                    onChange={(e) => setLocationInterval(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200"
+                  />
+                </div>
+              </div>
+
+              {/* Audio */}
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-white flex items-center gap-1.5">
+                    <Mic className="w-4 h-4 text-amber-400" /> Audio Record
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={sendAudio}
+                    onChange={(e) => setSendAudio(e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">
+                    Duration: {audioDuration}s
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={600}
+                    value={audioDuration}
+                    onChange={(e) => setAudioDuration(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200"
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                  <span>Only when Screen OFF</span>
+                  <input
+                    type="checkbox"
+                    checked={audioScreenOff}
+                    onChange={(e) => setAudioScreenOff(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-indigo-500 rounded"
+                  />
+                </div>
+              </div>
+
+              {/* Camera */}
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-white flex items-center gap-1.5">
+                    <Camera className="w-4 h-4 text-emerald-400" /> Camera Snap
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={sendCamera}
+                    onChange={(e) => setSendCamera(e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1">
+                    Interval: {cameraInterval}s
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={3600}
+                    value={cameraInterval}
+                    onChange={(e) => setCameraInterval(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200"
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                  <span>Only when Screen OFF</span>
+                  <input
+                    type="checkbox"
+                    checked={cameraScreenOff}
+                    onChange={(e) => setCameraScreenOff(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-indigo-500 rounded"
+                  />
+                </div>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
-                Lock Screen Message
-              </label>
-              <input
-                type="text"
-                value={lockMessage}
-                onChange={(e) => setLockMessage(e.target.value)}
-                placeholder="Message displayed when locked"
-                className="w-full px-3.5 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
-              />
+            {/* Save Button */}
+            <div className="pt-4 border-t border-slate-800 flex justify-end">
+              <button
+                type="submit"
+                disabled={saving}
+                className="py-3 px-8 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold flex items-center gap-2 transition shadow-lg shadow-indigo-600/20 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                <span>{saving ? 'Saving...' : 'Save All Settings to Device'}</span>
+              </button>
             </div>
+          </div>
+        </form>
 
-            <div className="flex items-center justify-between p-3 bg-slate-950/40 rounded-xl border border-slate-800">
-              <span className="text-xs text-slate-300 font-medium">Enable Location Tracking</span>
-              <input
-                type="checkbox"
-                checked={locationEnabled}
-                onChange={(e) => setLocationEnabled(e.target.checked)}
-                className="w-4 h-4 accent-indigo-500 rounded"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={saving}
-              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{saving ? 'Saving...' : 'Save Configuration'}</span>
-            </button>
-          </form>
-        </div>
-
-        {/* Command Queue & Logs */}
+        {/* Command Queue Table */}
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl">
           <h2 className="text-base font-bold text-white flex items-center gap-2 mb-4">
             <Terminal className="w-4 h-4 text-indigo-400" />

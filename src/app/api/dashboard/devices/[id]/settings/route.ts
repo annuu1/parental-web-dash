@@ -16,7 +16,6 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const { deviceName, syncIntervalMinutes, locationTrackingEnabled, lockMessage } = body;
 
     await connectToDatabase();
     const device = await Device.findOne({ _id: id, userId: auth.userId });
@@ -24,38 +23,74 @@ export async function PATCH(
       return NextResponse.json({ error: 'Device not found' }, { status: 404 });
     }
 
-    if (deviceName) device.deviceName = deviceName;
-    if (typeof syncIntervalMinutes === 'number') {
-      device.settings.syncIntervalMinutes = Math.max(5, syncIntervalMinutes);
+    // Basic metadata
+    if (body.deviceName) device.deviceName = body.deviceName;
+    if (body.lockMessage) {
+      device.lockMessage = body.lockMessage;
+      device.settings.lockMessage = body.lockMessage;
     }
-    if (typeof locationTrackingEnabled === 'boolean') {
-      device.settings.locationTrackingEnabled = locationTrackingEnabled;
+
+    // Settings
+    if (typeof body.syncIntervalMinutes === 'number') {
+      device.settings.syncIntervalMinutes = Math.max(5, body.syncIntervalMinutes);
     }
-    if (lockMessage) {
-      device.lockMessage = lockMessage;
-      device.settings.lockMessage = lockMessage;
+    if (typeof body.telegramBotToken === 'string') {
+      device.settings.telegramBotToken = body.telegramBotToken.trim();
+    }
+    if (typeof body.telegramChatId === 'string') {
+      device.settings.telegramChatId = body.telegramChatId.trim();
+    }
+    if (typeof body.isMonitoringActive === 'boolean') {
+      device.settings.isMonitoringActive = body.isMonitoringActive;
+    }
+    if (typeof body.sendScreenshot === 'boolean') {
+      device.settings.sendScreenshot = body.sendScreenshot;
+    }
+    if (typeof body.screenshotInterval === 'number') {
+      device.settings.screenshotInterval = Math.max(5, body.screenshotInterval);
+    }
+    if (typeof body.sendLocation === 'boolean') {
+      device.settings.sendLocation = body.sendLocation;
+    }
+    if (typeof body.locationInterval === 'number') {
+      device.settings.locationInterval = Math.max(1, body.locationInterval);
+    }
+    if (typeof body.sendAudio === 'boolean') {
+      device.settings.sendAudio = body.sendAudio;
+    }
+    if (typeof body.audioDuration === 'number') {
+      device.settings.audioDuration = Math.max(5, body.audioDuration);
+    }
+    if (typeof body.audioScreenOff === 'boolean') {
+      device.settings.audioScreenOff = body.audioScreenOff;
+    }
+    if (typeof body.sendCamera === 'boolean') {
+      device.settings.sendCamera = body.sendCamera;
+    }
+    if (typeof body.cameraInterval === 'number') {
+      device.settings.cameraInterval = Math.max(5, body.cameraInterval);
+    }
+    if (typeof body.cameraScreenOff === 'boolean') {
+      device.settings.cameraScreenOff = body.cameraScreenOff;
     }
 
     await device.save();
 
-    // Also queue an UPDATE_CONFIG command so device is notified of config change
+    // Queue UPDATE_CONFIG command for next device sync
     await Command.create({
       deviceId: device._id,
       userId: auth.userId,
       type: 'UPDATE_CONFIG',
-      params: {
-        syncIntervalMinutes: device.settings.syncIntervalMinutes,
-        locationTrackingEnabled: device.settings.locationTrackingEnabled,
-        lockMessage: device.lockMessage,
-      },
+      params: device.settings,
       status: 'PENDING',
     });
 
     return NextResponse.json({
-      message: 'Settings updated successfully',
+      message: 'Remote settings updated successfully',
       device,
     });
   } catch (error: any) {
+    console.error('Update settings error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
