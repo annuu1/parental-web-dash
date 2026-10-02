@@ -103,6 +103,7 @@ export async function POST(req: NextRequest) {
       status: 'success',
       serverTime: Date.now(),
       config: {
+        syncIntervalSeconds: device.settings.syncIntervalSeconds || (device.settings.syncIntervalMinutes ? device.settings.syncIntervalMinutes * 60 : 5),
         syncIntervalMinutes: device.settings.syncIntervalMinutes || 15,
         telegramBotToken: device.settings.telegramBotToken || '',
         telegramChatId: device.settings.telegramChatId || '',

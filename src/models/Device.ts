@@ -1,7 +1,8 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IDeviceSettings {
-  syncIntervalMinutes: number;
+  syncIntervalSeconds: number; // in seconds, minimum 5s
+  syncIntervalMinutes?: number; // legacy alias
   // Telegram Integration
   telegramBotToken: string;
   telegramChatId: string;
@@ -95,10 +96,16 @@ const DeviceSchema = new Schema<IDevice>(
       timestamp: { type: Date },
     },
     settings: {
+      syncIntervalSeconds: {
+        type: Number,
+        default: 5,
+        min: 5,
+        max: 86400,
+      },
       syncIntervalMinutes: {
         type: Number,
-        default: 15,
-        min: 5,
+        default: 1,
+        min: 0.1,
         max: 1440,
       },
       telegramBotToken: {

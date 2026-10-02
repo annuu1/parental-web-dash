@@ -78,7 +78,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 15000); // Poll dashboard every 15s
+    const interval = setInterval(fetchData, 5000); // Poll dashboard every 5s for near real-time updates
     return () => clearInterval(interval);
   }, []);
 

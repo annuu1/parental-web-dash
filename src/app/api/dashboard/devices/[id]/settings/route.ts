@@ -31,8 +31,12 @@ export async function PATCH(
     }
 
     // Settings
-    if (typeof body.syncIntervalMinutes === 'number') {
-      device.settings.syncIntervalMinutes = Math.max(5, body.syncIntervalMinutes);
+    if (typeof body.syncIntervalSeconds === 'number') {
+      device.settings.syncIntervalSeconds = Math.max(5, body.syncIntervalSeconds);
+      device.settings.syncIntervalMinutes = Math.ceil(device.settings.syncIntervalSeconds / 60);
+    } else if (typeof body.syncIntervalMinutes === 'number') {
+      device.settings.syncIntervalMinutes = body.syncIntervalMinutes;
+      device.settings.syncIntervalSeconds = Math.max(5, body.syncIntervalMinutes * 60);
     }
     if (typeof body.telegramBotToken === 'string') {
       device.settings.telegramBotToken = body.telegramBotToken.trim();

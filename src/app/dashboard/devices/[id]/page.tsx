@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   ArrowLeft,
-  Smartphone,
   Battery,
   BatteryCharging,
   MapPin,
@@ -23,6 +22,7 @@ import {
   Mic,
   Monitor,
   CheckCircle,
+  Zap,
 } from 'lucide-react';
 
 interface DeviceDetail {
@@ -41,7 +41,8 @@ interface DeviceDetail {
     timestamp?: string;
   };
   settings: {
-    syncIntervalMinutes: number;
+    syncIntervalSeconds?: number;
+    syncIntervalMinutes?: number;
     telegramBotToken: string;
     telegramChatId: string;
     isMonitoringActive: boolean;
@@ -88,7 +89,7 @@ export default function DeviceDetailPage({
 
   // Form states
   const [deviceName, setDeviceName] = useState('');
-  const [syncInterval, setSyncInterval] = useState(15);
+  const [syncInterval, setSyncInterval] = useState(5); // in seconds, min 5s
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [isMonitoringActive, setIsMonitoringActive] = useState(true);
@@ -118,7 +119,8 @@ export default function DeviceDetailPage({
       if (data.device) {
         setDeviceName(data.device.deviceName || '');
         const s = data.device.settings || {};
-        setSyncInterval(s.syncIntervalMinutes || 15);
+        const currentSeconds = s.syncIntervalSeconds || (s.syncIntervalMinutes ? s.syncIntervalMinutes * 60 : 5);
+        setSyncInterval(Math.max(5, currentSeconds));
         setTelegramBotToken(s.telegramBotToken || '');
         setTelegramChatId(s.telegramChatId || '');
         setIsMonitoringActive(s.isMonitoringActive ?? true);
@@ -143,7 +145,7 @@ export default function DeviceDetailPage({
 
   useEffect(() => {
     fetchDeviceData();
-    const interval = setInterval(fetchDeviceData, 10000);
+    const interval = setInterval(fetchDeviceData, 3000); // Poll every 3s for fast updates
     return () => clearInterval(interval);
   }, [id]);
 
@@ -157,7 +159,7 @@ export default function DeviceDetailPage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deviceName,
-          syncIntervalMinutes: Number(syncInterval),
+          syncIntervalSeconds: Math.max(5, Number(syncInterval)),
           telegramBotToken,
           telegramChatId,
           isMonitoringActive,
@@ -229,6 +231,14 @@ export default function DeviceDetailPage({
   }
 
   const hasLocation = device.lastLocation?.latitude && device.lastLocation?.longitude;
+  const activeSyncSeconds = device.settings?.syncIntervalSeconds || (device.settings?.syncIntervalMinutes ? device.settings.syncIntervalMinutes * 60 : 5);
+
+  const formatSyncDisplay = (sec: number) => {
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -298,10 +308,17 @@ export default function DeviceDetailPage({
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg flex items-center justify-between">
             <div>
               <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">Sync Heartbeat</span>
-              <span className="text-2xl font-bold text-indigo-400">
-                {device.settings?.syncIntervalMinutes || 15}m
-              </span>
-              <span className="text-xs text-slate-500 block mt-0.5">Battery Saver Sleep</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-2xl font-bold text-indigo-400">
+                  {formatSyncDisplay(activeSyncSeconds)}
+                </span>
+                {activeSyncSeconds <= 10 && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    FAST
+                  </span>
+                )}
+              </div>
+              <span className="text-xs text-slate-500 block mt-0.5">Min 5s interval</span>
             </div>
             <Clock className="w-8 h-8 text-indigo-400" />
           </div>
@@ -391,11 +408,11 @@ export default function DeviceDetailPage({
               </div>
             </div>
 
-            {/* 2. Device Alias & Lock Screen */}
+            {/* 2. Device Alias, Sync Frequency & Lock Screen */}
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 <Sliders className="w-4 h-4 text-indigo-400" />
-                General Settings & Screen Lock
+                General Settings & Sync Frequency
               </h2>
 
               <div>
@@ -411,22 +428,49 @@ export default function DeviceDetailPage({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1.5">
-                  Heartbeat Sync Frequency: {syncInterval} minutes
-                </label>
-                <input
-                  type="range"
-                  min={5}
-                  max={120}
-                  step={5}
-                  value={syncInterval}
-                  onChange={(e) => setSyncInterval(Number(e.target.value))}
-                  className="w-full accent-indigo-500"
-                />
-                <div className="flex justify-between text-[10px] text-slate-500 mt-1">
-                  <span>5m (Fast)</span>
-                  <span>15m (Recommended)</span>
-                  <span>120m (Max Battery)</span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold uppercase text-slate-400 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    Sync Heartbeat Interval: <span className="text-indigo-400 font-bold">{syncInterval}s</span>
+                  </label>
+                  <span className="text-[10px] text-slate-500">Min 5 seconds</span>
+                </div>
+
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="number"
+                    min={5}
+                    max={86400}
+                    value={syncInterval}
+                    onChange={(e) => setSyncInterval(Math.max(5, Number(e.target.value)))}
+                    className="w-24 px-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-white font-semibold text-center"
+                  />
+                  <span className="text-xs text-slate-400">seconds</span>
+                </div>
+
+                {/* Quick Presets */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {[
+                    { label: '5s (Real-time)', val: 5 },
+                    { label: '10s', val: 10 },
+                    { label: '30s', val: 30 },
+                    { label: '1 min', val: 60 },
+                    { label: '5 min', val: 300 },
+                    { label: '15 min', val: 900 },
+                  ].map((p) => (
+                    <button
+                      key={p.val}
+                      type="button"
+                      onClick={() => setSyncInterval(p.val)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition ${
+                        syncInterval === p.val
+                          ? 'bg-indigo-600 text-white font-bold'
+                          : 'bg-slate-950/60 border border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
