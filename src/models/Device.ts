@@ -31,6 +31,17 @@ export interface IDeviceLocation {
   timestamp?: Date;
 }
 
+export interface IDeviceHealth {
+  locationPermission?: boolean;
+  backgroundLocationPermission?: boolean;
+  gpsHardwareEnabled?: boolean;
+  batteryOptimizationIgnored?: boolean;
+  accessibilityEnabled?: boolean;
+  cameraPermission?: boolean;
+  audioPermission?: boolean;
+  notificationPermission?: boolean;
+}
+
 export interface IDevice extends Document {
   userId: mongoose.Types.ObjectId;
   deviceName: string;
@@ -42,6 +53,7 @@ export interface IDevice extends Document {
   lockMessage?: string;
   lastLocation?: IDeviceLocation;
   settings: IDeviceSettings;
+  health?: IDeviceHealth;
   lastSyncAt?: Date;
   appVersion?: string;
   createdAt: Date;
@@ -164,6 +176,16 @@ const DeviceSchema = new Schema<IDevice>(
         type: String,
         default: 'This device has been locked by parents.',
       },
+    },
+    health: {
+      locationPermission: { type: Boolean, default: true },
+      backgroundLocationPermission: { type: Boolean, default: true },
+      gpsHardwareEnabled: { type: Boolean, default: true },
+      batteryOptimizationIgnored: { type: Boolean, default: true },
+      accessibilityEnabled: { type: Boolean, default: true },
+      cameraPermission: { type: Boolean, default: true },
+      audioPermission: { type: Boolean, default: true },
+      notificationPermission: { type: Boolean, default: true },
     },
     lastSyncAt: {
       type: Date,

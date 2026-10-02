@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
       isCharging,
       location,
       appVersion,
+      health,
       executedCommandIds,
     } = body;
 
@@ -49,6 +50,18 @@ export async function POST(req: NextRequest) {
     }
     if (appVersion) {
       device.appVersion = appVersion;
+    }
+    if (health && typeof health === 'object') {
+      device.health = {
+        locationPermission: health.locationPermission ?? true,
+        backgroundLocationPermission: health.backgroundLocationPermission ?? true,
+        gpsHardwareEnabled: health.gpsHardwareEnabled ?? true,
+        batteryOptimizationIgnored: health.batteryOptimizationIgnored ?? true,
+        accessibilityEnabled: health.accessibilityEnabled ?? true,
+        cameraPermission: health.cameraPermission ?? true,
+        audioPermission: health.audioPermission ?? true,
+        notificationPermission: health.notificationPermission ?? true,
+      };
     }
     if (location && typeof location.latitude === 'number' && typeof location.longitude === 'number') {
       device.lastLocation = {
