@@ -107,6 +107,8 @@ export default function DeviceDetailPage({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [pingSuccess, setPingSuccess] = useState(false);
+  const [pinging, setPinging] = useState(false);
 
   // Form states (preserved during live polling)
   const isFormInitialized = useRef(false);
@@ -264,9 +266,6 @@ export default function DeviceDetailPage({
       </div>
     );
   }
-
-  const [pingSuccess, setPingSuccess] = useState(false);
-  const [pinging, setPinging] = useState(false);
 
   const getDeviceSyncStatus = (lastSyncAt?: string, intervalSeconds: number = 5) => {
     if (!lastSyncAt) {
