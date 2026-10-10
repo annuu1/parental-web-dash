@@ -116,10 +116,51 @@ export default function DashboardPage() {
     }
   };
 
+  const [pingSuccessId, setPingSuccessId] = useState<string | null>(null);
+
+  const getSyncStatus = (lastSyncAt?: string, intervalSeconds: number = 5) => {
+    if (!lastSyncAt) return { state: 'offline', label: 'Never Synced', color: 'text-slate-500', bg: 'bg-slate-700', pillBg: 'bg-slate-800 text-slate-400 border-slate-700' };
+    const diffSec = Math.floor((Date.now() - new Date(lastSyncAt).getTime()) / 1000);
+    if (diffSec <= Math.max(30, intervalSeconds * 2.5)) {
+      return { state: 'synced', label: 'In Sync', color: 'text-emerald-400', bg: 'bg-emerald-400 shadow-sm shadow-emerald-400/50', pillBg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' };
+    }
+    if (diffSec <= 300) {
+      return { state: 'delayed', label: 'Sync Delayed', color: 'text-amber-400', bg: 'bg-amber-400', pillBg: 'bg-amber-500/10 text-amber-400 border-amber-500/30' };
+    }
+    return { state: 'offline', label: 'Offline / Desynced', color: 'text-red-400', bg: 'bg-red-500', pillBg: 'bg-red-500/10 text-red-400 border-red-500/30' };
+  };
+
   const isDeviceOnline = (lastSyncAt?: string) => {
     if (!lastSyncAt) return false;
     const diffMs = Date.now() - new Date(lastSyncAt).getTime();
     return diffMs < 30 * 60 * 1000; // Active if synced within 30 min
+  };
+
+  const handlePingSync = async (device: DeviceItem) => {
+    setActionLoading(`ping_${device._id}`);
+    try {
+      const res = await fetch(`/api/dashboard/devices/${device._id}/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'PING_DEVICE',
+          params: { requestedAt: new Date().toISOString() },
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to ping device');
+      }
+
+      setPingSuccessId(device._id);
+      setTimeout(() => setPingSuccessId(null), 4000);
+      await fetchData();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const formatTimeAgo = (dateStr?: string) => {
@@ -239,8 +280,10 @@ export default function DashboardPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {devices.map((device) => {
-                const online = isDeviceOnline(device.lastSyncAt);
+                const syncStatus = getSyncStatus(device.lastSyncAt, (device.settings?.syncIntervalMinutes || 1) * 60);
                 const hasLocation = device.lastLocation?.latitude && device.lastLocation?.longitude;
+                const isPinging = actionLoading === `ping_${device._id}`;
+                const wasPinged = pingSuccessId === device._id;
 
                 return (
                   <div
@@ -253,13 +296,9 @@ export default function DashboardPage() {
                       {/* Top status */}
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex items-center gap-2">
-                          <div
-                            className={`w-2.5 h-2.5 rounded-full ${
-                              online ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-slate-600'
-                            }`}
-                          />
-                          <span className={`text-xs font-semibold ${online ? 'text-emerald-400' : 'text-slate-500'}`}>
-                            {online ? 'Online / Synced' : 'Idle'}
+                          <div className={`w-2.5 h-2.5 rounded-full ${syncStatus.bg}`} />
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${syncStatus.pillBg}`}>
+                            {syncStatus.label}
                           </span>
                         </div>
 
@@ -282,10 +321,21 @@ export default function DashboardPage() {
                       <div className="space-y-2.5 text-xs text-slate-300 bg-slate-950/50 p-3.5 rounded-xl border border-slate-800/60 mb-4">
                         <div className="flex items-center justify-between">
                           <span className="text-slate-500 flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5" /> Last Heartbeat
+                            <Clock className="w-3.5 h-3.5 text-indigo-400" /> Last Heartbeat
                           </span>
-                          <span className="font-medium text-slate-300">{formatTimeAgo(device.lastSyncAt)}</span>
+                          <span className={`font-medium ${syncStatus.color}`}>
+                            {formatTimeAgo(device.lastSyncAt)}
+                          </span>
                         </div>
+
+                        {device.lastSyncAt && (
+                          <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5 border-t border-slate-900">
+                            <span>Exact Time</span>
+                            <span className="font-mono text-slate-400">
+                              {new Date(device.lastSyncAt).toLocaleTimeString()}
+                            </span>
+                          </div>
+                        )}
 
                         <div className="flex items-center justify-between">
                           <span className="text-slate-500 flex items-center gap-1.5">
@@ -318,11 +368,31 @@ export default function DashboardPage() {
                             {device.isLocked ? 'LOCKED' : 'NORMAL'}
                           </span>
                         </div>
+
+                        {wasPinged && (
+                          <div className="p-2 rounded bg-indigo-500/20 border border-indigo-500/30 text-[11px] text-indigo-300 text-center font-medium animate-pulse">
+                            ⚡ Sync command queued! Waiting for response...
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     {/* Actions */}
                     <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
+                      <button
+                        onClick={() => handlePingSync(device)}
+                        disabled={isPinging}
+                        title="Ping device to check live synchronization"
+                        className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-indigo-300 text-xs font-medium flex items-center gap-1.5 transition border border-slate-700/60 disabled:opacity-50"
+                      >
+                        {isPinging ? (
+                          <span className="w-3 h-3 border-2 border-indigo-400/40 border-t-indigo-400 rounded-full animate-spin" />
+                        ) : (
+                          <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+                        )}
+                        <span>{isPinging ? 'Checking...' : 'Check Sync'}</span>
+                      </button>
+
                       <button
                         onClick={() => handleToggleLock(device)}
                         disabled={actionLoading === device._id}
@@ -336,11 +406,11 @@ export default function DashboardPage() {
                           <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
                         ) : device.isLocked ? (
                           <>
-                            <Unlock className="w-3.5 h-3.5" /> Unlock Device
+                            <Unlock className="w-3.5 h-3.5" /> Unlock
                           </>
                         ) : (
                           <>
-                            <Lock className="w-3.5 h-3.5" /> Lock Device
+                            <Lock className="w-3.5 h-3.5" /> Lock
                           </>
                         )}
                       </button>

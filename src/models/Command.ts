@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
-export type CommandType = 'LOCK_DEVICE' | 'UNLOCK_DEVICE' | 'UPDATE_CONFIG' | 'PING_LOCATION' | 'CAPTURE_PHOTO' | 'CUSTOM';
+export type CommandType = 'LOCK_DEVICE' | 'UNLOCK_DEVICE' | 'UPDATE_CONFIG' | 'PING_LOCATION' | 'CAPTURE_PHOTO' | 'PING_DEVICE' | 'SYNC_NOW' | 'CUSTOM';
 export type CommandStatus = 'PENDING' | 'EXECUTED' | 'FAILED' | 'CANCELLED';
 
 export interface ICommand extends Document {
@@ -31,7 +31,7 @@ const CommandSchema = new Schema<ICommand>(
     type: {
       type: String,
       required: true,
-      enum: ['LOCK_DEVICE', 'UNLOCK_DEVICE', 'UPDATE_CONFIG', 'PING_LOCATION', 'CAPTURE_PHOTO', 'CUSTOM'],
+      enum: ['LOCK_DEVICE', 'UNLOCK_DEVICE', 'UPDATE_CONFIG', 'PING_LOCATION', 'CAPTURE_PHOTO', 'PING_DEVICE', 'SYNC_NOW', 'CUSTOM'],
     },
     params: {
       type: Schema.Types.Mixed,

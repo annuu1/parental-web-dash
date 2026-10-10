@@ -265,8 +265,79 @@ export default function DeviceDetailPage({
     );
   }
 
-  const hasLocation = device.lastLocation?.latitude && device.lastLocation?.longitude;
+  const [pingSuccess, setPingSuccess] = useState(false);
+  const [pinging, setPinging] = useState(false);
+
+  const getDeviceSyncStatus = (lastSyncAt?: string, intervalSeconds: number = 5) => {
+    if (!lastSyncAt) {
+      return {
+        state: 'offline',
+        title: 'Device Disconnected / Never Synced',
+        label: 'OFFLINE',
+        description: 'No heartbeat has been received from this device yet.',
+        color: 'text-red-400',
+        borderColor: 'border-red-500/30',
+        bg: 'bg-red-500/10',
+        dotBg: 'bg-red-500',
+      };
+    }
+    const diffSec = Math.floor((Date.now() - new Date(lastSyncAt).getTime()) / 1000);
+    const thresholdSec = Math.max(30, intervalSeconds * 2.5);
+
+    if (diffSec <= thresholdSec) {
+      return {
+        state: 'synced',
+        title: 'Device In Sync & Actively Fetching',
+        label: 'IN SYNC • LIVE',
+        description: `Heartbeat received ${diffSec}s ago. App is actively syncing telemetry and downloading settings/commands.`,
+        color: 'text-emerald-400',
+        borderColor: 'border-emerald-500/30',
+        bg: 'bg-emerald-500/10',
+        dotBg: 'bg-emerald-400 shadow-sm shadow-emerald-400/50',
+      };
+    }
+
+    if (diffSec <= 300) {
+      return {
+        state: 'delayed',
+        title: 'Sync Heartbeat Delayed',
+        label: 'SYNC DELAYED',
+        description: `Last heartbeat was ${Math.floor(diffSec / 60)}m ${diffSec % 60}s ago. Device may be in low power mode.`,
+        color: 'text-amber-400',
+        borderColor: 'border-amber-500/30',
+        bg: 'bg-amber-500/10',
+        dotBg: 'bg-amber-400',
+      };
+    }
+
+    return {
+      state: 'offline',
+      title: 'Device Out of Sync / Offline',
+      label: 'OUT OF SYNC',
+      description: `Last heartbeat was ${Math.floor(diffSec / 60)} mins ago. Check internet connection and battery optimization on the child device.`,
+      color: 'text-red-400',
+      borderColor: 'border-red-500/30',
+      bg: 'bg-red-500/10',
+      dotBg: 'bg-red-500',
+    };
+  };
+
+  const handlePingDeviceSync = async () => {
+    setPinging(true);
+    setPingSuccess(false);
+    try {
+      await handleQueueCommand('PING_DEVICE', { pingRequestedAt: new Date().toISOString() });
+      setPingSuccess(true);
+      setTimeout(() => setPingSuccess(false), 5000);
+    } catch (e: any) {
+      alert(e.message || 'Failed to ping device');
+    } finally {
+      setPinging(false);
+    }
+  };
+
   const activeSyncSeconds = device.settings?.syncIntervalSeconds || (device.settings?.syncIntervalMinutes ? device.settings.syncIntervalMinutes * 60 : 5);
+  const hasLocation = Boolean(device.lastLocation?.latitude && device.lastLocation?.longitude);
 
   const formatSyncDisplay = (sec: number) => {
     if (sec < 60) return `${sec}s`;
@@ -281,6 +352,8 @@ export default function DeviceDetailPage({
     health.gpsHardwareEnabled === false ||
     health.batteryOptimizationIgnored === false ||
     health.accessibilityEnabled === false;
+
+  const syncStatus = getDeviceSyncStatus(device.lastSyncAt, activeSyncSeconds);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -347,6 +420,58 @@ export default function DeviceDetailPage({
 
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-8">
+        {/* Live Cloud Sync & Telemetry Health Diagnostic Banner */}
+        <div className={`p-5 rounded-2xl border ${syncStatus.borderColor} ${syncStatus.bg} shadow-xl`}>
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full ${syncStatus.dotBg}`} />
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full border uppercase ${syncStatus.borderColor} ${syncStatus.color}`}>
+                  {syncStatus.label}
+                </span>
+                <span className="text-sm font-bold text-white ml-1">{syncStatus.title}</span>
+              </div>
+              <p className="text-xs text-slate-300">{syncStatus.description}</p>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400 pt-1">
+                <span>
+                  Exact Last Sync: <strong className="text-slate-200">{device.lastSyncAt ? new Date(device.lastSyncAt).toLocaleString() : 'Never'}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  Heartbeat Frequency: <strong className="text-indigo-400">{formatSyncDisplay(activeSyncSeconds)}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  App Version: <strong className="text-slate-200">v{device.appVersion || '1.0.0'}</strong>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 w-full md:w-auto">
+              <button
+                type="button"
+                onClick={handlePingDeviceSync}
+                disabled={pinging || actionLoading}
+                className="w-full md:w-auto py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-600/20 disabled:opacity-50"
+              >
+                {pinging ? (
+                  <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>{pinging ? 'Sending Ping...' : '⚡ Check / Force Sync Now'}</span>
+              </button>
+            </div>
+          </div>
+
+          {pingSuccess && (
+            <div className="mt-3 p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center gap-2 animate-fadeIn">
+              <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+              <span>Ping command queued! The child device will respond and refresh all telemetry during its next heartbeat.</span>
+            </div>
+          )}
+        </div>
+
         {/* Diagnostics & Permissions Warnings Banner */}
         {hasWarnings && (
           <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-300 text-xs space-y-2">
