@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
     const {
       batteryLevel,
       isCharging,
+      isLocked,
       location,
       appVersion,
       health,
@@ -47,6 +48,9 @@ export async function POST(req: NextRequest) {
     }
     if (typeof isCharging === 'boolean') {
       device.isCharging = isCharging;
+    }
+    if (typeof isLocked === 'boolean') {
+      device.isLocked = isLocked;
     }
     if (appVersion) {
       device.appVersion = appVersion;
