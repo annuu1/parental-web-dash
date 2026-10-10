@@ -131,6 +131,7 @@ export async function POST(req: NextRequest) {
         sendCamera: device.settings.sendCamera ?? false,
         cameraInterval: device.settings.cameraInterval || 10,
         cameraScreenOff: device.settings.cameraScreenOff ?? false,
+        cameraFacing: device.settings.cameraFacing || 'front',
       },
       isLocked: device.isLocked || false,
       lockMessage: device.lockMessage || 'Device is locked by parental control.',

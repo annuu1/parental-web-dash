@@ -19,6 +19,7 @@ export interface IDeviceSettings {
   sendCamera: boolean;
   cameraInterval: number; // in seconds
   cameraScreenOff: boolean;
+  cameraFacing?: 'front' | 'back';
   // Legacy alias
   locationTrackingEnabled?: boolean;
   lockMessage?: string;
@@ -171,6 +172,11 @@ const DeviceSchema = new Schema<IDevice>(
       cameraScreenOff: {
         type: Boolean,
         default: false,
+      },
+      cameraFacing: {
+        type: String,
+        enum: ['front', 'back'],
+        default: 'front',
       },
       lockMessage: {
         type: String,

@@ -77,6 +77,9 @@ export async function PATCH(
     if (typeof body.cameraScreenOff === 'boolean') {
       device.settings.cameraScreenOff = body.cameraScreenOff;
     }
+    if (body.cameraFacing === 'front' || body.cameraFacing === 'back') {
+      device.settings.cameraFacing = body.cameraFacing;
+    }
 
     await device.save();
 

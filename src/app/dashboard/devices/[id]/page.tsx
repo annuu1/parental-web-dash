@@ -19,6 +19,7 @@ import {
   Activity,
   Send,
   Camera,
+  SwitchCamera,
   Mic,
   Monitor,
   CheckCircle,
@@ -73,6 +74,7 @@ interface DeviceDetail {
     sendCamera: boolean;
     cameraInterval: number;
     cameraScreenOff: boolean;
+    cameraFacing?: 'front' | 'back';
     lockMessage?: string;
   };
   health?: DeviceHealth;
@@ -123,6 +125,7 @@ export default function DeviceDetailPage({
   const [sendCamera, setSendCamera] = useState(false);
   const [cameraInterval, setCameraInterval] = useState(10);
   const [cameraScreenOff, setCameraScreenOff] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
   const [lockMessage, setLockMessage] = useState('');
 
   const populateFormFromDevice = (dev: DeviceDetail) => {
@@ -143,6 +146,7 @@ export default function DeviceDetailPage({
     setSendCamera(s.sendCamera ?? false);
     setCameraInterval(s.cameraInterval || 10);
     setCameraScreenOff(s.cameraScreenOff ?? false);
+    setCameraFacing(s.cameraFacing === 'back' ? 'back' : 'front');
     setLockMessage(dev.lockMessage || 'This device is locked by parental control.');
   };
 
@@ -203,6 +207,7 @@ export default function DeviceDetailPage({
           sendCamera,
           cameraInterval: Number(cameraInterval),
           cameraScreenOff,
+          cameraFacing,
           lockMessage,
         }),
       });
@@ -651,10 +656,21 @@ export default function DeviceDetailPage({
                   type="button"
                   onClick={() => handleQueueCommand('PING_LOCATION')}
                   disabled={actionLoading}
-                  className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 transition"
+                  className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
                 >
                   <MapPin className="w-4 h-4 text-indigo-400" />
-                  <span>Request GPS</span>
+                  <span>GPS</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleQueueCommand('CAPTURE_PHOTO', { camera: cameraFacing })}
+                  disabled={actionLoading}
+                  className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
+                  title={`Snap instant photo using ${cameraFacing} camera`}
+                >
+                  <Camera className="w-4 h-4 text-emerald-400" />
+                  <span>Snap Photo ({cameraFacing === 'back' ? 'Back' : 'Front'})</span>
                 </button>
               </div>
             </div>
@@ -774,6 +790,44 @@ export default function DeviceDetailPage({
                     className="w-4 h-4 accent-indigo-500 rounded"
                   />
                 </div>
+
+                {/* Camera Lens Flip Selector */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <SwitchCamera className="w-3.5 h-3.5 text-indigo-400" />
+                      Camera Lens
+                    </label>
+                    <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {cameraFacing === 'back' ? 'Back / Rear' : 'Front / Selfie'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setCameraFacing('front')}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition border ${
+                        cameraFacing === 'front'
+                          ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm shadow-indigo-600/30'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <span>🤳 Front</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCameraFacing('back')}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition border ${
+                        cameraFacing === 'back'
+                          ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm shadow-indigo-600/30'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <span>📸 Back</span>
+                    </button>
+                  </div>
+                </div>
+
                 <div>
                   <label className="text-[11px] text-slate-400 block mb-1">
                     Interval: {cameraInterval}s
