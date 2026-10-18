@@ -80,6 +80,7 @@ const GeofenceEventSchema = new Schema<IGeofenceEvent>(
 
 GeofenceEventSchema.index({ deviceId: 1, timestamp: -1 });
 GeofenceEventSchema.index({ geofenceId: 1, timestamp: -1 });
+GeofenceEventSchema.index({ userId: 1, timestamp: -1 });
 
 export const GeofenceEvent: Model<IGeofenceEvent> =
   mongoose.models.GeofenceEvent ||

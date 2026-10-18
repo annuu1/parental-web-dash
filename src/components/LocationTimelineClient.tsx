@@ -129,6 +129,7 @@ export default function LocationTimelineClient({
   const geofenceLayersRef = useRef<Map<string, L.Circle>>(new Map());
   const draftGeofenceLayerRef = useRef<L.Circle | null>(null);
   const draftMarkerRef = useRef<L.Marker | null>(null);
+  const alertMarkerRef = useRef<L.Marker | null>(null);
 
   // Geofence Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -249,6 +250,98 @@ export default function LocationTimelineClient({
       iconAnchor: [21, 10],
     });
   };
+
+  const createAlertDivIcon = (color: string = '#f43f5e') => {
+    return L.divIcon({
+      className: 'custom-alert-ping-marker',
+      html: `
+        <div style="position: relative; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;">
+          <div style="position: absolute; width: 100%; height: 100%; border-radius: 50%; background-color: ${color}; opacity: 0.45; animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+          <div style="position: relative; width: 24px; height: 24px; border-radius: 50%; background-color: ${color}; border: 3px solid #ffffff; box-shadow: 0 0 15px ${color}; display: flex; align-items: center; justify-content: center; color: white; font-size: 13px; font-weight: 900;">
+            !
+          </div>
+        </div>
+      `,
+      iconSize: [38, 38],
+      iconAnchor: [19, 19],
+    });
+  };
+
+  // Listen for real-time geofence alerts broadcasted by GeofenceAlertManager
+  useEffect(() => {
+    const handleAlertReceived = (e: Event) => {
+      const customEvent = e as CustomEvent<GeofenceEventItem & { deviceId?: string }>;
+      const alert = customEvent.detail;
+      if (!alert || (alert.deviceId && alert.deviceId !== deviceId)) return;
+
+      // Automatically refresh geofence events list, fences, and points
+      fetchGeofenceEvents();
+      fetchGeofences();
+      fetchLocationPoints();
+    };
+
+    const handleViewOnMap = (e: Event) => {
+      const customEvent = e as CustomEvent<GeofenceEventItem & { deviceId?: string }>;
+      const alert = customEvent.detail;
+      if (!alert || (alert.deviceId && alert.deviceId !== deviceId)) return;
+
+      setActiveTab('events');
+
+      if (mapInstanceRef.current && alert.latitude && alert.longitude) {
+        mapInstanceRef.current.flyTo([alert.latitude, alert.longitude], 16, {
+          animate: true,
+          duration: 1.2,
+        });
+
+        if (alertMarkerRef.current) {
+          mapInstanceRef.current.removeLayer(alertMarkerRef.current);
+          alertMarkerRef.current = null;
+        }
+
+        const color = alert.eventType === 'ENTER' ? '#10b981' : '#f43f5e';
+        const marker = L.marker([alert.latitude, alert.longitude], {
+          icon: createAlertDivIcon(color),
+          zIndexOffset: 1000,
+        }).addTo(mapInstanceRef.current);
+
+        marker
+          .bindPopup(
+            `
+          <div style="color: #0f172a; font-family: sans-serif; font-size: 12px; min-width: 170px; padding: 2px;">
+            <div style="font-weight: 800; font-size: 13px; margin-bottom: 3px; color: ${
+              alert.eventType === 'ENTER' ? '#059669' : '#e11d48'
+            };">
+              ${alert.eventType === 'ENTER' ? '🟢 ZONE ENTERED' : '🚨 ZONE EXITED'}
+            </div>
+            <div style="font-weight: 600; color: #1e293b; margin-bottom: 2px;">${alert.geofenceName}</div>
+            <div style="color: #64748b; font-size: 11px;">Distance: ${alert.distanceFromCenter}m from center</div>
+            <div style="color: #94a3b8; font-size: 10px; margin-top: 4px;">${new Date(
+              alert.timestamp
+            ).toLocaleTimeString()}</div>
+          </div>
+        `
+          )
+          .openPopup();
+
+        alertMarkerRef.current = marker;
+
+        setTimeout(() => {
+          if (alertMarkerRef.current && mapInstanceRef.current) {
+            mapInstanceRef.current.removeLayer(alertMarkerRef.current);
+            alertMarkerRef.current = null;
+          }
+        }, 30000);
+      }
+    };
+
+    window.addEventListener('geofence-alert-received', handleAlertReceived);
+    window.addEventListener('geofence-alert-view-map', handleViewOnMap);
+
+    return () => {
+      window.removeEventListener('geofence-alert-received', handleAlertReceived);
+      window.removeEventListener('geofence-alert-view-map', handleViewOnMap);
+    };
+  }, [deviceId, fetchGeofenceEvents, fetchGeofences, fetchLocationPoints]);
 
   // 4. Initialize Map once
   useEffect(() => {
