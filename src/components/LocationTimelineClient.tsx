@@ -87,6 +87,9 @@ const PRESET_COLORS = [
   { name: 'Cyan', hex: '#06b6d4' },
 ];
 
+const CARTO_API_KEY =
+  process.env.NEXT_PUBLIC_CARTO_API_KEY || 'cb1_4noy_1_dc64d715096491d93cecfa94';
+
 export default function LocationTimelineClient({
   deviceId,
   deviceName,
@@ -262,17 +265,53 @@ export default function LocationTimelineClient({
       attributionControl: false,
     });
 
-    // Dark-themed tiles with clear streets (CartoDB Dark Matter / Voyager)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    // Basemap tile layers with CARTO Basemaps API key
+    const voyagerLayer = L.tileLayer(
+      `https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`,
+      {
+        maxZoom: 19,
+        subdomains: 'abcd',
+        attribution:
+          '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OSM</a>',
+      }
+    );
+
+    const darkLayer = L.tileLayer(
+      `https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`,
+      {
+        maxZoom: 19,
+        subdomains: 'abcd',
+        attribution:
+          '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OSM</a>',
+      }
+    );
+
+    const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      subdomains: 'abcd',
-    }).addTo(map);
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+    });
+
+    voyagerLayer.addTo(map);
+
+    L.control
+      .layers(
+        {
+          'Street (Voyager)': voyagerLayer,
+          'Dark Matter': darkLayer,
+          'OpenStreetMap': osmLayer,
+        },
+        undefined,
+        { position: 'topright' }
+      )
+      .addTo(map);
 
     // Attribution in bottom right
     L.control
       .attribution({
         position: 'bottomright',
-        prefix: '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OSM</a>',
+        prefix:
+          '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OSM</a>',
       })
       .addTo(map);
 
