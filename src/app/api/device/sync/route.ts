@@ -4,6 +4,7 @@ import { Device, IDevice } from '@/models/Device';
 import { Command } from '@/models/Command';
 import { TelemetryLog } from '@/models/TelemetryLog';
 import { verifyToken } from '@/lib/auth';
+import { processLocationForGeofences } from '@/lib/geofenceService';
 
 export async function POST(req: NextRequest) {
   try {
@@ -77,6 +78,16 @@ export async function POST(req: NextRequest) {
     }
     device.lastSyncAt = new Date();
     await device.save();
+
+    // 2.5 Process Geofences if location was reported
+    if (location && typeof location.latitude === 'number' && typeof location.longitude === 'number') {
+      await processLocationForGeofences(
+        device,
+        location.latitude,
+        location.longitude,
+        location.accuracy || 0
+      );
+    }
 
     // 3. Save historical telemetry log
     if (typeof batteryLevel === 'number' || location?.latitude) {

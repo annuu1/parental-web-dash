@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   RefreshCw,
 } from 'lucide-react';
+import LocationTimelineMap from '@/components/LocationTimelineMap';
 
 interface DeviceHealth {
   locationPermission?: boolean;
@@ -553,15 +554,24 @@ export default function DeviceDetailPage({
             <div>
               <span className="text-xs uppercase font-semibold text-slate-400 block mb-1">GPS Location</span>
               {hasLocation ? (
-                <a
-                  href={`https://www.google.com/maps?q=${device.lastLocation?.latitude},${device.lastLocation?.longitude}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sm font-semibold text-indigo-400 hover:underline flex items-center gap-1 mt-1"
-                >
-                  <span>Open Maps</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+                <div className="flex items-center gap-2 mt-1">
+                  <a
+                    href="#location-timeline"
+                    className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 transition flex items-center gap-1"
+                  >
+                    <MapPin className="w-3 h-3" />
+                    <span>View Map</span>
+                  </a>
+                  <a
+                    href={`https://www.google.com/maps?q=${device.lastLocation?.latitude},${device.lastLocation?.longitude}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-slate-400 hover:text-indigo-400 flex items-center gap-0.5"
+                    title="Open in Google Maps"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
               ) : (
                 <span className="text-sm text-slate-500">
                   {health.locationPermission === false
@@ -571,7 +581,7 @@ export default function DeviceDetailPage({
                     : 'Locating...'}
                 </span>
               )}
-              <span className="text-xs text-slate-500 block mt-1">
+              <span className="text-xs text-slate-500 block mt-1 font-mono">
                 {hasLocation
                   ? `${device.lastLocation?.latitude?.toFixed(4)}, ${device.lastLocation?.longitude?.toFixed(4)}`
                   : 'Waiting for fix'}
@@ -617,6 +627,16 @@ export default function DeviceDetailPage({
             </div>
           </div>
         </div>
+
+        {/* Interactive Location Timeline & Geofencing Map Section */}
+        <section id="location-timeline" className="scroll-mt-20">
+          <LocationTimelineMap
+            deviceId={device._id}
+            deviceName={device.deviceName}
+            currentLocation={device.lastLocation}
+            onRefreshParent={fetchDeviceData}
+          />
+        </section>
 
         {/* Remote Settings Form */}
         <form onSubmit={handleSaveSettings} className="space-y-6">

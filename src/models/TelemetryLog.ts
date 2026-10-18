@@ -46,6 +46,9 @@ const TelemetryLogSchema = new Schema<ITelemetryLog>(
   }
 );
 
+TelemetryLogSchema.index({ deviceId: 1, recordedAt: -1 });
+TelemetryLogSchema.index({ deviceId: 1, latitude: 1, recordedAt: -1 });
+
 export const TelemetryLog: Model<ITelemetryLog> =
   mongoose.models.TelemetryLog ||
   mongoose.model<ITelemetryLog>('TelemetryLog', TelemetryLogSchema);
