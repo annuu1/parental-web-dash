@@ -1,5 +1,14 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
+export interface ILocationSchedule {
+  id: string;
+  name: string;
+  startTime: string; // HH:mm format e.g. "09:00"
+  endTime: string; // HH:mm format e.g. "19:00"
+  intervalSeconds: number; // e.g. 60 or 300
+  enabled: boolean;
+}
+
 export interface IDeviceSettings {
   syncIntervalSeconds: number; // in seconds, minimum 5s
   syncIntervalMinutes?: number; // legacy alias
@@ -12,7 +21,9 @@ export interface IDeviceSettings {
   sendScreenshot: boolean;
   screenshotInterval: number; // in seconds
   sendLocation: boolean;
-  locationInterval: number; // in minutes
+  locationInterval: number; // in minutes (legacy)
+  locationDefaultIntervalSeconds?: number; // in seconds, e.g. 60
+  locationSchedules?: ILocationSchedule[];
   sendAudio: boolean;
   audioDuration: number; // in seconds
   audioScreenOff: boolean;
@@ -149,6 +160,20 @@ const DeviceSchema = new Schema<IDevice>(
         type: Number,
         default: 10,
       },
+      locationDefaultIntervalSeconds: {
+        type: Number,
+        default: 60,
+      },
+      locationSchedules: [
+        {
+          id: { type: String, required: true },
+          name: { type: String, required: true },
+          startTime: { type: String, required: true },
+          endTime: { type: String, required: true },
+          intervalSeconds: { type: Number, required: true, default: 60 },
+          enabled: { type: Boolean, default: true },
+        },
+      ],
       sendAudio: {
         type: Boolean,
         default: false,

@@ -30,8 +30,18 @@ import {
   ShieldAlert,
   ShieldCheck,
   RefreshCw,
+  Plus,
 } from 'lucide-react';
 import LocationTimelineMap from '@/components/LocationTimelineMap';
+
+export interface LocationScheduleRule {
+  id: string;
+  name: string;
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  intervalSeconds: number;
+  enabled: boolean;
+}
 
 interface DeviceHealth {
   locationPermission?: boolean;
@@ -69,6 +79,8 @@ interface DeviceDetail {
     screenshotInterval: number;
     sendLocation: boolean;
     locationInterval: number;
+    locationDefaultIntervalSeconds?: number;
+    locationSchedules?: LocationScheduleRule[];
     sendAudio: boolean;
     audioDuration: number;
     audioScreenOff: boolean;
@@ -122,6 +134,25 @@ export default function DeviceDetailPage({
   const [screenshotInterval, setScreenshotInterval] = useState(10);
   const [sendLocation, setSendLocation] = useState(true);
   const [locationInterval, setLocationInterval] = useState(10);
+  const [locationDefaultIntervalSeconds, setLocationDefaultIntervalSeconds] = useState(60);
+  const [locationSchedules, setLocationSchedules] = useState<LocationScheduleRule[]>([
+    {
+      id: 'daytime',
+      name: 'Daytime (9am – 7pm)',
+      startTime: '09:00',
+      endTime: '19:00',
+      intervalSeconds: 60,
+      enabled: true,
+    },
+    {
+      id: 'night',
+      name: 'Night (7pm – 8am)',
+      startTime: '19:00',
+      endTime: '08:00',
+      intervalSeconds: 300,
+      enabled: true,
+    },
+  ]);
   const [sendAudio, setSendAudio] = useState(false);
   const [audioDuration, setAudioDuration] = useState(60);
   const [audioScreenOff, setAudioScreenOff] = useState(false);
@@ -143,6 +174,29 @@ export default function DeviceDetailPage({
     setScreenshotInterval(s.screenshotInterval || 10);
     setSendLocation(s.sendLocation ?? true);
     setLocationInterval(s.locationInterval || 10);
+    setLocationDefaultIntervalSeconds(s.locationDefaultIntervalSeconds || 60);
+    if (Array.isArray(s.locationSchedules) && s.locationSchedules.length > 0) {
+      setLocationSchedules(s.locationSchedules);
+    } else {
+      setLocationSchedules([
+        {
+          id: 'daytime',
+          name: 'Daytime (9am – 7pm)',
+          startTime: '09:00',
+          endTime: '19:00',
+          intervalSeconds: 60,
+          enabled: true,
+        },
+        {
+          id: 'night',
+          name: 'Night (7pm – 8am)',
+          startTime: '19:00',
+          endTime: '08:00',
+          intervalSeconds: 300,
+          enabled: true,
+        },
+      ]);
+    }
     setSendAudio(s.sendAudio ?? false);
     setAudioDuration(s.audioDuration || 60);
     setAudioScreenOff(s.audioScreenOff ?? false);
@@ -151,6 +205,74 @@ export default function DeviceDetailPage({
     setCameraScreenOff(s.cameraScreenOff ?? false);
     setCameraFacing(s.cameraFacing === 'back' ? 'back' : 'front');
     setLockMessage(dev.lockMessage || 'This device is locked by parental control.');
+  };
+
+  const getActiveScheduleInfo = () => {
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    for (const sched of locationSchedules) {
+      if (!sched.enabled) continue;
+      const [sh, sm] = (sched.startTime || '00:00').split(':').map(Number);
+      const [eh, em] = (sched.endTime || '00:00').split(':').map(Number);
+      const startMin = sh * 60 + sm;
+      const endMin = eh * 60 + em;
+
+      let isMatch = false;
+      if (startMin < endMin) {
+        isMatch = currentMinutes >= startMin && currentMinutes < endMin;
+      } else {
+        isMatch = currentMinutes >= startMin || currentMinutes < endMin;
+      }
+
+      if (isMatch) {
+        return { activeSchedule: sched, intervalSeconds: sched.intervalSeconds };
+      }
+    }
+    return { activeSchedule: null, intervalSeconds: locationDefaultIntervalSeconds };
+  };
+
+  const handleApplyRecommendedPreset = () => {
+    setLocationDefaultIntervalSeconds(60);
+    setLocationSchedules([
+      {
+        id: 'daytime',
+        name: 'Daytime (9am – 7pm)',
+        startTime: '09:00',
+        endTime: '19:00',
+        intervalSeconds: 60,
+        enabled: true,
+      },
+      {
+        id: 'night',
+        name: 'Night (7pm – 8am)',
+        startTime: '19:00',
+        endTime: '08:00',
+        intervalSeconds: 300,
+        enabled: true,
+      },
+    ]);
+  };
+
+  const handleAddScheduleRule = () => {
+    const newRule: LocationScheduleRule = {
+      id: `sched_${Date.now()}`,
+      name: `Schedule Window ${locationSchedules.length + 1}`,
+      startTime: '08:00',
+      endTime: '14:00',
+      intervalSeconds: 120,
+      enabled: true,
+    };
+    setLocationSchedules([...locationSchedules, newRule]);
+  };
+
+  const handleUpdateScheduleRule = (id: string, updates: Partial<LocationScheduleRule>) => {
+    setLocationSchedules((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, ...updates } : r))
+    );
+  };
+
+  const handleDeleteScheduleRule = (id: string) => {
+    setLocationSchedules((prev) => prev.filter((r) => r.id !== id));
   };
 
   const fetchDeviceData = async () => {
@@ -204,6 +326,8 @@ export default function DeviceDetailPage({
           screenshotInterval: Number(screenshotInterval),
           sendLocation,
           locationInterval: Number(locationInterval),
+          locationDefaultIntervalSeconds: Number(locationDefaultIntervalSeconds),
+          locationSchedules,
           sendAudio,
           audioDuration: Number(audioDuration),
           audioScreenOff,
@@ -870,17 +994,27 @@ export default function DeviceDetailPage({
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">
-                    Interval: {locationInterval} mins
-                  </label>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                    <span>Default Interval</span>
+                    <span className="font-bold text-indigo-400 font-mono">{locationDefaultIntervalSeconds}s</span>
+                  </div>
                   <input
                     type="number"
-                    min={1}
-                    max={1440}
-                    value={locationInterval}
-                    onChange={(e) => setLocationInterval(Number(e.target.value))}
+                    min={5}
+                    max={86400}
+                    value={locationDefaultIntervalSeconds}
+                    onChange={(e) => setLocationDefaultIntervalSeconds(Math.max(5, Number(e.target.value)))}
                     className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200"
                   />
+                </div>
+                <div className="pt-0.5">
+                  <a
+                    href="#location-schedules"
+                    className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1 font-medium"
+                  >
+                    <Clock className="w-3 h-3" />
+                    <span>Time Ranges ({locationSchedules.length})</span>
+                  </a>
                 </div>
               </div>
 
@@ -994,6 +1128,183 @@ export default function DeviceDetailPage({
                     className="w-3.5 h-3.5 accent-indigo-500 rounded"
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* 3.5 Location Recording Time-Range Schedules & Frequency */}
+            <div id="location-schedules" className="p-5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-indigo-400" />
+                    <h3 className="text-sm font-bold text-white">Location Recording Schedules & Adaptive Frequency</h3>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Configure high-frequency tracking during active hours (e.g. 60s daytime) and lower frequency during quiet hours (e.g. 300s night) to protect child device battery and reduce server storage.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleApplyRecommendedPreset}
+                    className="px-3 py-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+                    title="Apply recommended schedule: 60s (9am-7pm), 300s (7pm-8am)"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Apply Preset (60s / 300s)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAddScheduleRule}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Add Time Window</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Active Rate Indicator */}
+              {(() => {
+                const activeInfo = getActiveScheduleInfo();
+                return (
+                  <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="text-slate-300">
+                        Current Recording Rate Right Now:{' '}
+                        <strong className="text-white font-mono">Every {activeInfo.intervalSeconds}s</strong>{' '}
+                        {activeInfo.activeSchedule ? (
+                          <span className="text-indigo-400 font-medium">({activeInfo.activeSchedule.name})</span>
+                        ) : (
+                          <span className="text-slate-400 font-medium">(Default Fallback)</span>
+                        )}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-400 hidden sm:inline">
+                      Evaluated on local device time
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Schedule Windows List */}
+              <div className="space-y-2.5">
+                {locationSchedules.map((sched) => (
+                  <div
+                    key={sched.id}
+                    className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs transition ${
+                      sched.enabled
+                        ? 'bg-slate-900/90 border-slate-800'
+                        : 'bg-slate-950/40 border-slate-900 opacity-60'
+                    }`}
+                  >
+                    {/* Schedule Name */}
+                    <div className="flex-1 min-w-[180px]">
+                      <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
+                        Schedule Label
+                      </label>
+                      <input
+                        type="text"
+                        value={sched.name}
+                        onChange={(e) => handleUpdateScheduleRule(sched.id, { name: e.target.value })}
+                        className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-medium focus:outline-none focus:border-indigo-500"
+                        placeholder="e.g. Daytime Active"
+                      />
+                    </div>
+
+                    {/* Start Time */}
+                    <div className="w-32">
+                      <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
+                        Start Time
+                      </label>
+                      <input
+                        type="time"
+                        value={sched.startTime}
+                        onChange={(e) => handleUpdateScheduleRule(sched.id, { startTime: e.target.value })}
+                        className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono"
+                      />
+                    </div>
+
+                    {/* End Time */}
+                    <div className="w-32">
+                      <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
+                        End Time
+                      </label>
+                      <input
+                        type="time"
+                        value={sched.endTime}
+                        onChange={(e) => handleUpdateScheduleRule(sched.id, { endTime: e.target.value })}
+                        className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono"
+                      />
+                    </div>
+
+                    {/* Interval */}
+                    <div className="w-36">
+                      <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
+                        Frequency (seconds)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={5}
+                          max={86400}
+                          value={sched.intervalSeconds}
+                          onChange={(e) =>
+                            handleUpdateScheduleRule(sched.id, {
+                              intervalSeconds: Math.max(5, Number(e.target.value)),
+                            })
+                          }
+                          className="w-20 px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono font-bold text-center"
+                        />
+                        <span className="text-slate-400 text-[11px]">sec</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Interval Preset Chips */}
+                    <div className="flex items-center gap-1">
+                      {[30, 60, 120, 300, 600].map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => handleUpdateScheduleRule(sched.id, { intervalSeconds: sec })}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition ${
+                            sched.intervalSeconds === sec
+                              ? 'bg-indigo-600 text-white font-bold'
+                              : 'bg-slate-950 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {sec < 60 ? `${sec}s` : `${sec / 60}m`}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Enabled toggle & delete */}
+                    <div className="flex items-center gap-2 pt-2 md:pt-0">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateScheduleRule(sched.id, { enabled: !sched.enabled })}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase transition ${
+                          sched.enabled
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {sched.enabled ? 'Active' : 'Disabled'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteScheduleRule(sched.id)}
+                        className="p-1.5 text-slate-500 hover:text-red-400 rounded-lg transition"
+                        title="Delete schedule"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
