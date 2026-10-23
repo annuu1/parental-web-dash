@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import {
   MapPin,
@@ -25,7 +25,21 @@ import {
   Battery,
   BatteryCharging,
   Zap,
+  Footprints,
+  Bike,
+  Car,
+  Gauge,
+  Radio,
+  LocateFixed,
+  SkipBack,
+  SkipForward,
+  ChevronLeft,
+  ChevronRight,
+  Repeat,
+  MapPinned,
 } from 'lucide-react';
+
+export type TransitMode = 'STATIONARY' | 'WALKING' | 'CYCLING' | 'VEHICLE';
 
 export interface LocationPoint {
   id: string;
@@ -36,6 +50,24 @@ export interface LocationPoint {
   isCharging: boolean;
   recordedAt: string;
   distanceFromPrevMeters?: number;
+  speedKmh?: number;
+  mode?: TransitMode;
+  dwellMinutes?: number;
+}
+
+export interface ActivityChapter {
+  id: string;
+  type: 'STAY' | 'TRIP';
+  mode: TransitMode;
+  startIndex: number;
+  endIndex: number;
+  startTime: string;
+  endTime: string;
+  durationMinutes: number;
+  distanceMeters: number;
+  maxSpeedKmh: number;
+  avgSpeedKmh: number;
+  label: string;
 }
 
 export interface GeofenceItem {
@@ -90,6 +122,104 @@ const PRESET_COLORS = [
 const CARTO_API_KEY =
   process.env.NEXT_PUBLIC_CARTO_API_KEY || 'cb1_4noy_1_dc64d715096491d93cecfa94';
 
+export function computeActivityChapters(points: LocationPoint[]): ActivityChapter[] {
+  if (!points || points.length === 0) return [];
+
+  const chapters: ActivityChapter[] = [];
+  let currentStartIndex = 0;
+  let currentType: 'STAY' | 'TRIP' = points[0].mode === 'STATIONARY' ? 'STAY' : 'TRIP';
+
+  for (let i = 1; i <= points.length; i++) {
+    const isEnd = i === points.length;
+    const ptType = !isEnd ? (points[i].mode === 'STATIONARY' ? 'STAY' : 'TRIP') : null;
+
+    if (isEnd || ptType !== currentType) {
+      const segment = points.slice(currentStartIndex, i);
+      const startPt = segment[0];
+      const endPt = segment[segment.length - 1];
+
+      const startTime = startPt.recordedAt;
+      const endTime = endPt.recordedAt;
+      const durationMs = new Date(endTime).getTime() - new Date(startTime).getTime();
+      const durationMinutes = Math.max(1, Math.round(durationMs / 60000));
+
+      let totalDist = 0;
+      let maxSpeed = 0;
+      let movingSeconds = 0;
+      const modeCounts: Record<string, number> = {};
+
+      for (let j = 1; j < segment.length; j++) {
+        const p = segment[j];
+        totalDist += p.distanceFromPrevMeters || 0;
+        if ((p.speedKmh || 0) > maxSpeed) maxSpeed = p.speedKmh || 0;
+        const prev = segment[j - 1];
+        const dt =
+          (new Date(p.recordedAt).getTime() - new Date(prev.recordedAt).getTime()) / 1000;
+        if (dt > 0) movingSeconds += dt;
+        if (p.mode) {
+          modeCounts[p.mode] = (modeCounts[p.mode] || 0) + 1;
+        }
+      }
+
+      let dominantMode: TransitMode = currentType === 'STAY' ? 'STATIONARY' : 'WALKING';
+      if (currentType === 'TRIP') {
+        let maxCount = 0;
+        for (const [m, count] of Object.entries(modeCounts)) {
+          if (m !== 'STATIONARY' && count > maxCount) {
+            maxCount = count;
+            dominantMode = m as TransitMode;
+          }
+        }
+        if (maxSpeed >= 25 && dominantMode === 'WALKING') {
+          dominantMode = 'VEHICLE';
+        }
+      }
+
+      const avgSpeed =
+        movingSeconds > 0 ? Number(((totalDist / movingSeconds) * 3.6).toFixed(1)) : 0;
+
+      let label = '';
+      if (currentType === 'STAY') {
+        label = `Stay (${
+          durationMinutes >= 60
+            ? `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m`
+            : `${durationMinutes}m`
+        })`;
+      } else {
+        const modeLabel =
+          dominantMode === 'VEHICLE'
+            ? 'Drive'
+            : dominantMode === 'CYCLING'
+            ? 'Cycling'
+            : 'Walk';
+        label = `${modeLabel} • ${(totalDist / 1000).toFixed(1)} km (${durationMinutes}m)`;
+      }
+
+      chapters.push({
+        id: `chapter-${chapters.length}-${currentStartIndex}`,
+        type: currentType,
+        mode: dominantMode,
+        startIndex: currentStartIndex,
+        endIndex: i - 1,
+        startTime,
+        endTime,
+        durationMinutes,
+        distanceMeters: Math.round(totalDist),
+        maxSpeedKmh: Number(maxSpeed.toFixed(1)),
+        avgSpeedKmh: avgSpeed,
+        label,
+      });
+
+      if (!isEnd) {
+        currentStartIndex = i;
+        currentType = ptType!;
+      }
+    }
+  }
+
+  return chapters;
+}
+
 export default function LocationTimelineClient({
   deviceId,
   deviceName,
@@ -102,10 +232,23 @@ export default function LocationTimelineClient({
   const [summary, setSummary] = useState<{
     totalPoints: number;
     totalDistanceKm: number;
+    avgSpeedKmh?: number;
+    maxSpeedKmh?: number;
     startTime: string | null;
     endTime: string | null;
-  }>({ totalPoints: 0, totalDistanceKm: 0, startTime: null, endTime: null });
+  }>({
+    totalPoints: 0,
+    totalDistanceKm: 0,
+    avgSpeedKmh: 0,
+    maxSpeedKmh: 0,
+    startTime: null,
+    endTime: null,
+  });
   const [loadingPoints, setLoadingPoints] = useState(false);
+
+  // Live Auto-Refresh states
+  const [isLiveAutoRefresh, setIsLiveAutoRefresh] = useState(false);
+  const [liveCountdown, setLiveCountdown] = useState(15);
 
   // Geofence states
   const [geofences, setGeofences] = useState<GeofenceItem[]>([]);
@@ -114,16 +257,27 @@ export default function LocationTimelineClient({
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [activeTab, setActiveTab] = useState<'timeline' | 'geofences' | 'events'>('timeline');
 
-  // Playback states
+  // Playback & Tracking states
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackIndex, setPlaybackIndex] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1); // 1x, 2x, 5x, 10x
+  const [isLooping, setIsLooping] = useState(false);
+  const [followDevice, setFollowDevice] = useState(true);
+  const followDeviceRef = useRef(true);
+  followDeviceRef.current = followDevice;
+
+  // Slider Hover Preview states
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hoverPercent, setHoverPercent] = useState<number>(0);
+
   const playbackTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Map & Leaflet refs
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
-  const polylineLayerRef = useRef<L.Polyline | null>(null);
+  const traveledPolylineRef = useRef<L.Polyline | null>(null);
+  const remainingPolylineRef = useRef<L.Polyline | null>(null);
+  const startMarkerRef = useRef<L.Marker | null>(null);
   const currentMarkerRef = useRef<L.Marker | null>(null);
   const scrubberMarkerRef = useRef<L.Marker | null>(null);
   const geofenceLayersRef = useRef<Map<string, L.Circle>>(new Map());
@@ -143,33 +297,94 @@ export default function LocationTimelineClient({
   const [formNotifyTelegram, setFormNotifyTelegram] = useState(true);
   const [submittingGeofence, setSubmittingGeofence] = useState(false);
 
-  // 1. Fetch Timeline Points
-  const fetchLocationPoints = useCallback(async () => {
-    setLoadingPoints(true);
-    try {
-      const res = await fetch(`/api/dashboard/devices/${deviceId}/locations?range=${timeRange}&limit=1000`);
-      if (res.ok) {
-        const data = await res.json();
-        setPoints(data.points || []);
-        setSummary(
-          data.summary || {
-            totalPoints: data.points?.length || 0,
-            totalDistanceKm: 0,
-            startTime: null,
-            endTime: null,
-          }
-        );
-        // Reset playback index to the end (latest point)
-        if (data.points?.length > 0) {
-          setPlaybackIndex(data.points.length - 1);
-        }
+  // Chapters & Activity Breakdown
+  const chapters = useMemo(() => computeActivityChapters(points), [points]);
+  const activeChapter = useMemo(() => {
+    return chapters.find((ch) => playbackIndex >= ch.startIndex && playbackIndex <= ch.endIndex);
+  }, [chapters, playbackIndex]);
+
+  const activityStats = useMemo(() => {
+    let vehicleDist = 0;
+    let walkDist = 0;
+    let cycleDist = 0;
+    let stayMins = 0;
+
+    chapters.forEach((ch) => {
+      if (ch.type === 'STAY') {
+        stayMins += ch.durationMinutes;
+      } else if (ch.mode === 'VEHICLE') {
+        vehicleDist += ch.distanceMeters;
+      } else if (ch.mode === 'CYCLING') {
+        cycleDist += ch.distanceMeters;
+      } else {
+        walkDist += ch.distanceMeters;
       }
-    } catch (err) {
-      console.error('Failed to fetch location timeline:', err);
-    } finally {
-      setLoadingPoints(false);
-    }
-  }, [deviceId, timeRange]);
+    });
+
+    return {
+      vehicleKm: Number((vehicleDist / 1000).toFixed(1)),
+      walkKm: Number((walkDist / 1000).toFixed(1)),
+      cycleKm: Number((cycleDist / 1000).toFixed(1)),
+      stayHours: Number((stayMins / 60).toFixed(1)),
+    };
+  }, [chapters]);
+
+  // 1. Fetch Timeline Points (supports silent refresh for live mode)
+  const fetchLocationPoints = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoadingPoints(true);
+      try {
+        const res = await fetch(
+          `/api/dashboard/devices/${deviceId}/locations?range=${timeRange}&limit=1000`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const newPoints: LocationPoint[] = data.points || [];
+          setPoints(newPoints);
+          setSummary(
+            data.summary || {
+              totalPoints: newPoints.length,
+              totalDistanceKm: 0,
+              avgSpeedKmh: 0,
+              maxSpeedKmh: 0,
+              startTime: null,
+              endTime: null,
+            }
+          );
+          // If at the end or on initial load, advance index to latest point
+          setPlaybackIndex((prevIdx) => {
+            if (newPoints.length === 0) return 0;
+            if (prevIdx === 0 && newPoints.length > 0) return newPoints.length - 1;
+            if (prevIdx >= newPoints.length - 2) return newPoints.length - 1;
+            return Math.min(prevIdx, newPoints.length - 1);
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch location timeline:', err);
+      } finally {
+        if (!silent) setLoadingPoints(false);
+      }
+    },
+    [deviceId, timeRange]
+  );
+
+  // Live Auto-Refresh Interval
+  useEffect(() => {
+    if (!isLiveAutoRefresh) return;
+    setLiveCountdown(15);
+
+    const timer = setInterval(() => {
+      setLiveCountdown((prev) => {
+        if (prev <= 1) {
+          fetchLocationPoints(true);
+          return 15;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isLiveAutoRefresh, fetchLocationPoints]);
 
   // 2. Fetch Geofences
   const fetchGeofences = useCallback(async () => {
@@ -215,22 +430,9 @@ export default function LocationTimelineClient({
     return L.divIcon({
       className: 'custom-pulse-marker',
       html: `
-        <div style="position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">
-          <div style="position: absolute; width: 100%; height: 100%; border-radius: 50%; background-color: ${color}; opacity: 0.35; animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-          <div style="position: relative; width: 14px; height: 14px; border-radius: 50%; background-color: ${color}; border: 2.5px solid #ffffff; box-shadow: 0 0 10px ${color};"></div>
-        </div>
-      `,
-      iconSize: [24, 24],
-      iconAnchor: [12, 12],
-    });
-  };
-
-  const createScrubberDivIcon = (color: string = '#6366f1') => {
-    return L.divIcon({
-      className: 'custom-scrubber-marker',
-      html: `
         <div style="position: relative; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;">
-          <div style="width: 18px; height: 18px; border-radius: 50%; background-color: ${color}; border: 3px solid #ffffff; box-shadow: 0 2px 10px rgba(0,0,0,0.5);"></div>
+          <div style="position: absolute; width: 100%; height: 100%; border-radius: 50%; background-color: ${color}; opacity: 0.35; animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+          <div style="position: relative; width: 15px; height: 15px; border-radius: 50%; background-color: ${color}; border: 2.5px solid #ffffff; box-shadow: 0 0 12px ${color};"></div>
         </div>
       `,
       iconSize: [26, 26],
@@ -238,16 +440,32 @@ export default function LocationTimelineClient({
     });
   };
 
+  const createScrubberDivIcon = (color: string = '#6366f1') => {
+    return L.divIcon({
+      className: 'custom-scrubber-marker',
+      html: `
+        <div style="position: relative; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;">
+          <div style="position: absolute; width: 100%; height: 100%; border-radius: 50%; background-color: ${color}; opacity: 0.35; animation: ping 2s infinite;"></div>
+          <div style="width: 20px; height: 20px; border-radius: 50%; background-color: ${color}; border: 3px solid #ffffff; box-shadow: 0 3px 12px rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center;">
+            <div style="width: 6px; height: 6px; border-radius: 50%; background-color: #ffffff;"></div>
+          </div>
+        </div>
+      `,
+      iconSize: [30, 30],
+      iconAnchor: [15, 15],
+    });
+  };
+
   const createStartDivIcon = () => {
     return L.divIcon({
       className: 'custom-start-marker',
       html: `
-        <div style="background-color: #10b981; color: white; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 6px; border: 1.5px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.4); text-align: center; white-space: nowrap;">
+        <div style="background: linear-gradient(135deg, #10b981, #059669); color: white; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 9999px; border: 1.5px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4); text-align: center; white-space: nowrap; letter-spacing: 0.5px;">
           START
         </div>
       `,
-      iconSize: [42, 20],
-      iconAnchor: [21, 10],
+      iconSize: [50, 22],
+      iconAnchor: [25, 11],
     });
   };
 
@@ -267,6 +485,29 @@ export default function LocationTimelineClient({
     });
   };
 
+  // Interactive polyline click handler: snaps scrubber to closest recorded point
+  const handlePolylineClick = useCallback(
+    (e: L.LeafletMouseEvent) => {
+      if (points.length === 0) return;
+      const clickLat = e.latlng.lat;
+      const clickLng = e.latlng.lng;
+      let closestIdx = 0;
+      let minDistance = Infinity;
+
+      points.forEach((pt, idx) => {
+        const d = Math.hypot(pt.latitude - clickLat, pt.longitude - clickLng);
+        if (d < minDistance) {
+          minDistance = d;
+          closestIdx = idx;
+        }
+      });
+
+      setPlaybackIndex(closestIdx);
+      setIsPlaying(false);
+    },
+    [points]
+  );
+
   // Listen for real-time geofence alerts broadcasted by GeofenceAlertManager
   useEffect(() => {
     const handleAlertReceived = (e: Event) => {
@@ -274,10 +515,9 @@ export default function LocationTimelineClient({
       const alert = customEvent.detail;
       if (!alert || (alert.deviceId && alert.deviceId !== deviceId)) return;
 
-      // Automatically refresh geofence events list, fences, and points
       fetchGeofenceEvents();
       fetchGeofences();
-      fetchLocationPoints();
+      fetchLocationPoints(true);
     };
 
     const handleViewOnMap = (e: Event) => {
@@ -343,13 +583,12 @@ export default function LocationTimelineClient({
     };
   }, [deviceId, fetchGeofenceEvents, fetchGeofences, fetchLocationPoints]);
 
-  // 4. Initialize Map once
+  // 4. Initialize Map once with Multi-Layer Support (including Satellite Aerial)
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    // Default center (or current location if available)
     const initialLat = currentLocation?.latitude || 28.6139;
-    const initialLng = currentLocation?.longitude || 77.2090;
+    const initialLng = currentLocation?.longitude || 77.209;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -358,7 +597,7 @@ export default function LocationTimelineClient({
       attributionControl: false,
     });
 
-    // Basemap tile layers with CARTO Basemaps API key
+    // Basemap tile layers
     const voyagerLayer = L.tileLayer(
       `https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`,
       {
@@ -366,6 +605,16 @@ export default function LocationTimelineClient({
         subdomains: 'abcd',
         attribution:
           '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OSM</a>',
+      }
+    );
+
+    // High-Resolution Satellite Aerial Layer (Esri World Imagery)
+    const satelliteLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 19,
+        attribution:
+          '&copy; <a href="https://www.esri.com/" target="_blank">Esri</a>, Maxar, Earthstar Geographics',
       }
     );
 
@@ -391,6 +640,7 @@ export default function LocationTimelineClient({
       .layers(
         {
           'Street (Voyager)': voyagerLayer,
+          'Satellite (Aerial)': satelliteLayer,
           'Dark Matter': darkLayer,
           'OpenStreetMap': osmLayer,
         },
@@ -399,7 +649,6 @@ export default function LocationTimelineClient({
       )
       .addTo(map);
 
-    // Attribution in bottom right
     L.control
       .attribution({
         position: 'bottomright',
@@ -408,9 +657,13 @@ export default function LocationTimelineClient({
       })
       .addTo(map);
 
+    // User manual drag listener: pause camera auto-lock so user can freely pan
+    map.on('dragstart', () => {
+      setFollowDevice(false);
+    });
+
     mapInstanceRef.current = map;
 
-    // Invalidate size to ensure full view
     setTimeout(() => {
       map.invalidateSize();
     }, 250);
@@ -446,7 +699,6 @@ export default function LocationTimelineClient({
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    // Clear existing geofence circles
     geofenceLayersRef.current.forEach((circle) => map.removeLayer(circle));
     geofenceLayersRef.current.clear();
 
@@ -461,7 +713,6 @@ export default function LocationTimelineClient({
         dashArray: fence.currentStatus === 'INSIDE' ? undefined : '5, 5',
       }).addTo(map);
 
-      // Tooltip / Popup
       const statusBadge =
         fence.currentStatus === 'INSIDE'
           ? '<span style="color:#10b981;font-weight:bold;">🟢 INSIDE ZONE</span>'
@@ -475,7 +726,9 @@ export default function LocationTimelineClient({
           <div style="margin:4px 0;">${statusBadge}</div>
           <span style="color:#64748b;">Radius: <strong>${fence.radius}m</strong></span><br/>
           <span style="color:#64748b;">Notify on: <strong>${fence.notifyOn}</strong></span><br/>
-          <span style="color:#64748b;">Telegram Alerts: <strong>${fence.notifyTelegram ? 'Enabled' : 'Disabled'}</strong></span>
+          <span style="color:#64748b;">Telegram Alerts: <strong>${
+            fence.notifyTelegram ? 'Enabled' : 'Disabled'
+          }</strong></span>
         </div>
       `);
 
@@ -483,19 +736,25 @@ export default function LocationTimelineClient({
     });
   }, [geofences]);
 
-  // 6. Update Polyline and Live Markers when Points change
+  // 6. Two-Tone Route Polyline & Markers (Traveled vs Upcoming Trail)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    // Remove existing polyline
-    if (polylineLayerRef.current) {
-      map.removeLayer(polylineLayerRef.current);
-      polylineLayerRef.current = null;
-    }
-
     if (points.length === 0) {
-      // If no points, show current location marker if available
+      if (traveledPolylineRef.current) {
+        map.removeLayer(traveledPolylineRef.current);
+        traveledPolylineRef.current = null;
+      }
+      if (remainingPolylineRef.current) {
+        map.removeLayer(remainingPolylineRef.current);
+        remainingPolylineRef.current = null;
+      }
+      if (startMarkerRef.current) {
+        map.removeLayer(startMarkerRef.current);
+        startMarkerRef.current = null;
+      }
+
       if (currentLocation?.latitude && currentLocation?.longitude) {
         if (!currentMarkerRef.current) {
           currentMarkerRef.current = L.marker(
@@ -513,66 +772,148 @@ export default function LocationTimelineClient({
       return;
     }
 
-    // Convert points to LatLngs
-    const latLngs: L.LatLngExpression[] = points.map((p) => [p.latitude, p.longitude]);
-
-    // Draw route polyline with glowing border
-    const polyline = L.polyline(latLngs, {
-      color: '#4f46e5',
-      weight: 4,
-      opacity: 0.85,
-      smoothFactor: 1.0,
-      lineCap: 'round',
-      lineJoin: 'round',
-    }).addTo(map);
-
-    polylineLayerRef.current = polyline;
-
-    // Fit bounds to display the whole route
+    const latLngs = points.map((p) => [p.latitude, p.longitude] as [number, number]);
     const bounds = L.latLngBounds(latLngs);
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 17 });
     }
 
-    // Latest location marker (pulsing)
+    // Traveled segment (start to current scrubber index)
+    const safeIndex = Math.min(playbackIndex, points.length - 1);
+    const traveledLatLngs = points
+      .slice(0, safeIndex + 1)
+      .map((p) => [p.latitude, p.longitude] as [number, number]);
+
+    // Remaining segment (current scrubber index to end)
+    const remainingLatLngs = points
+      .slice(safeIndex)
+      .map((p) => [p.latitude, p.longitude] as [number, number]);
+
+    // Traveled Polyline (Glow Indigo)
+    if (!traveledPolylineRef.current) {
+      traveledPolylineRef.current = L.polyline(traveledLatLngs, {
+        color: '#6366f1',
+        weight: 5,
+        opacity: 0.95,
+        smoothFactor: 1.0,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+      traveledPolylineRef.current.on('click', handlePolylineClick);
+    } else {
+      traveledPolylineRef.current.setLatLngs(traveledLatLngs);
+    }
+
+    // Remaining Polyline (Dashed Slate)
+    if (!remainingPolylineRef.current) {
+      remainingPolylineRef.current = L.polyline(remainingLatLngs, {
+        color: '#64748b',
+        weight: 3.5,
+        opacity: 0.5,
+        dashArray: '6, 8',
+        smoothFactor: 1.0,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+      remainingPolylineRef.current.on('click', handlePolylineClick);
+    } else {
+      remainingPolylineRef.current.setLatLngs(remainingLatLngs);
+    }
+
+    // Start marker on earliest checkpoint
+    if (points.length > 1) {
+      const startPt = points[0];
+      if (!startMarkerRef.current) {
+        startMarkerRef.current = L.marker([startPt.latitude, startPt.longitude], {
+          icon: createStartDivIcon(),
+          zIndexOffset: 500,
+        }).addTo(map);
+      } else {
+        startMarkerRef.current.setLatLng([startPt.latitude, startPt.longitude]);
+      }
+      startMarkerRef.current.bindPopup(`
+        <div style="font-family:sans-serif;font-size:12px;padding:3px;min-width:140px;">
+          <strong style="color:#059669;font-size:13px;">🚩 TRIP START</strong>
+          <div style="color:#475569;margin-top:2px;">${new Date(
+            startPt.recordedAt
+          ).toLocaleTimeString()} (${new Date(startPt.recordedAt).toLocaleDateString()})</div>
+          <div style="color:#94a3b8;font-size:11px;margin-top:2px;">Battery: ${
+            startPt.batteryLevel
+          }%</div>
+        </div>
+      `);
+    } else if (startMarkerRef.current) {
+      map.removeLayer(startMarkerRef.current);
+      startMarkerRef.current = null;
+    }
+
+    // Latest location marker (pulsing green radar)
     const latestPoint = points[points.length - 1];
     if (!currentMarkerRef.current) {
       currentMarkerRef.current = L.marker([latestPoint.latitude, latestPoint.longitude], {
         icon: createPulseDivIcon('#10b981'),
-        title: 'Current Location',
+        zIndexOffset: 800,
+        title: 'Latest Fix',
       }).addTo(map);
     } else {
       currentMarkerRef.current.setLatLng([latestPoint.latitude, latestPoint.longitude]);
     }
-  }, [points, currentLocation]);
 
-  // 7. Update Scrubber Marker when playbackIndex changes
+    currentMarkerRef.current.bindPopup(`
+      <div style="font-family:sans-serif;font-size:12px;padding:3px;min-width:160px;">
+        <strong style="color:#059669;font-size:13px;">🟢 LATEST POSITION</strong>
+        <div style="color:#475569;margin-top:2px;">${new Date(
+          latestPoint.recordedAt
+        ).toLocaleTimeString()}</div>
+        <div style="color:#64748b;font-size:11px;margin-top:2px;">
+          Speed: <strong>${latestPoint.speedKmh || 0} km/h</strong> • Battery: <strong>${
+      latestPoint.batteryLevel
+    }%</strong>
+        </div>
+      </div>
+    `);
+  }, [points, currentLocation, handlePolylineClick]);
+
+  // 7. Update Scrubber Marker & Trail when playbackIndex changes
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || points.length === 0) return;
 
-    const currentPoint = points[playbackIndex];
+    const safeIndex = Math.min(playbackIndex, points.length - 1);
+    const currentPoint = points[safeIndex];
     if (!currentPoint) return;
 
+    // Update scrubber marker
     if (!scrubberMarkerRef.current) {
       scrubberMarkerRef.current = L.marker([currentPoint.latitude, currentPoint.longitude], {
         icon: createScrubberDivIcon('#6366f1'),
-        zIndexOffset: 1000,
+        zIndexOffset: 1200,
       }).addTo(map);
     } else {
       scrubberMarkerRef.current.setLatLng([currentPoint.latitude, currentPoint.longitude]);
     }
 
-    // When playing, pan gently to follow the dot if it goes out of view
-    if (isPlaying && map) {
-      const bounds = map.getBounds();
-      if (!bounds.contains([currentPoint.latitude, currentPoint.longitude])) {
-        map.panTo([currentPoint.latitude, currentPoint.longitude], { animate: true, duration: 0.3 });
-      }
+    // Dynamically update two-tone polylines
+    if (traveledPolylineRef.current) {
+      const traveled = points
+        .slice(0, safeIndex + 1)
+        .map((p) => [p.latitude, p.longitude] as [number, number]);
+      traveledPolylineRef.current.setLatLngs(traveled);
     }
-  }, [playbackIndex, points, isPlaying]);
+    if (remainingPolylineRef.current) {
+      const remaining = points
+        .slice(safeIndex)
+        .map((p) => [p.latitude, p.longitude] as [number, number]);
+      remainingPolylineRef.current.setLatLngs(remaining);
+    }
 
-  // 8. Playback loop
+    // Auto-pan camera if followDevice is active
+    if (followDeviceRef.current && map) {
+      map.panTo([currentPoint.latitude, currentPoint.longitude], { animate: true, duration: 0.25 });
+    }
+  }, [playbackIndex, points]);
+
+  // 8. Playback loop (with loop mode support)
   useEffect(() => {
     if (!isPlaying) {
       if (playbackTimerRef.current) clearInterval(playbackTimerRef.current);
@@ -584,6 +925,9 @@ export default function LocationTimelineClient({
     playbackTimerRef.current = setInterval(() => {
       setPlaybackIndex((prev) => {
         if (prev >= points.length - 1) {
+          if (isLooping) {
+            return 0;
+          }
           setIsPlaying(false);
           return prev;
         }
@@ -594,7 +938,7 @@ export default function LocationTimelineClient({
     return () => {
       if (playbackTimerRef.current) clearInterval(playbackTimerRef.current);
     };
-  }, [isPlaying, playbackSpeed, points.length]);
+  }, [isPlaying, playbackSpeed, points.length, isLooping]);
 
   // 9. Draft Geofence Circle on Map while adjusting modal
   useEffect(() => {
@@ -640,7 +984,6 @@ export default function LocationTimelineClient({
 
   // Handlers
   const handleOpenAddGeofence = () => {
-    // Default to current device location or center of map
     const map = mapInstanceRef.current;
     let initialLat = currentLocation?.latitude;
     let initialLng = currentLocation?.longitude;
@@ -658,7 +1001,7 @@ export default function LocationTimelineClient({
 
     setFormName('');
     setFormLat(initialLat ? Number(initialLat.toFixed(6)) : 28.6139);
-    setFormLng(initialLng ? Number(initialLng.toFixed(6)) : 77.2090);
+    setFormLng(initialLng ? Number(initialLng.toFixed(6)) : 77.209);
     setFormRadius(150);
     setFormColor('#3b82f6');
     setFormNotifyOn('BOTH');
@@ -747,7 +1090,69 @@ export default function LocationTimelineClient({
     }
   };
 
+  // Playback Navigation Helpers
+  const handleJumpPrevChapter = () => {
+    setIsPlaying(false);
+    for (let i = chapters.length - 1; i >= 0; i--) {
+      if (chapters[i].startIndex < playbackIndex) {
+        setPlaybackIndex(chapters[i].startIndex);
+        handleCenterOnPoint(
+          points[chapters[i].startIndex].latitude,
+          points[chapters[i].startIndex].longitude
+        );
+        return;
+      }
+    }
+    setPlaybackIndex(0);
+  };
+
+  const handleJumpNextChapter = () => {
+    setIsPlaying(false);
+    for (let i = 0; i < chapters.length; i++) {
+      if (chapters[i].startIndex > playbackIndex) {
+        setPlaybackIndex(chapters[i].startIndex);
+        handleCenterOnPoint(
+          points[chapters[i].startIndex].latitude,
+          points[chapters[i].startIndex].longitude
+        );
+        return;
+      }
+    }
+    if (points.length > 0) {
+      setPlaybackIndex(points.length - 1);
+    }
+  };
+
+  const handleStepBack = () => {
+    setIsPlaying(false);
+    setPlaybackIndex((prev) => Math.max(0, prev - 1));
+  };
+
+  const handleStepForward = () => {
+    setIsPlaying(false);
+    setPlaybackIndex((prev) => Math.min(points.length - 1, prev + 1));
+  };
+
+  // Slider Mouse Move / Hover Preview
+  const handleSliderMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (points.length === 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const pct = (x / rect.width) * 100;
+    const idx = Math.min(
+      points.length - 1,
+      Math.max(0, Math.round((pct / 100) * (points.length - 1)))
+    );
+    setHoverPercent(pct);
+    setHoverIndex(idx);
+  };
+
+  const handleSliderMouseLeave = () => {
+    setHoverIndex(null);
+  };
+
   const activePoint = points[playbackIndex] || null;
+  const hoverPoint = hoverIndex !== null && points[hoverIndex] ? points[hoverIndex] : null;
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl flex flex-col space-y-0">
@@ -770,8 +1175,28 @@ export default function LocationTimelineClient({
           </div>
         </div>
 
-        {/* Action Tabs */}
-        <div className="flex items-center gap-2">
+        {/* Action Controls & Tabs */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Live Auto-Refresh Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setIsLiveAutoRefresh(!isLiveAutoRefresh)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+              isLiveAutoRefresh
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/20'
+                : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
+            }`}
+            title="Automatically poll for fresh GPS pings every 15s"
+          >
+            <Radio
+              className={`w-3.5 h-3.5 ${
+                isLiveAutoRefresh ? 'animate-pulse text-emerald-400' : 'text-slate-400'
+              }`}
+            />
+            <span>{isLiveAutoRefresh ? `LIVE (${liveCountdown}s)` : 'Live Tracking'}</span>
+          </button>
+
+          {/* Action Tabs */}
           <div className="bg-slate-950/80 p-1 rounded-xl border border-slate-800 flex items-center text-xs">
             <button
               onClick={() => setActiveTab('timeline')}
@@ -840,29 +1265,91 @@ export default function LocationTimelineClient({
       )}
 
       {/* 2. Main Map Container */}
-      <div className="relative w-full h-[460px] bg-slate-950">
+      <div className="relative w-full h-[480px] bg-slate-950">
         <div ref={mapContainerRef} className="w-full h-full z-0" />
 
         {/* Floating Metrics Badge on top left of map */}
-        <div className="absolute top-3 left-3 z-[400] bg-slate-950/85 backdrop-blur-md border border-slate-800 p-2.5 rounded-2xl shadow-xl flex items-center gap-3 text-xs">
+        <div className="absolute top-3 left-3 z-[400] bg-slate-950/90 backdrop-blur-md border border-slate-800 p-2.5 rounded-2xl shadow-xl flex items-center gap-3 text-xs">
           <div>
-            <span className="text-[10px] uppercase text-slate-400 font-bold block">Distance Travelled</span>
+            <span className="text-[10px] uppercase text-slate-400 font-bold block">
+              Distance Travelled
+            </span>
             <span className="text-sm font-bold text-white">{summary.totalDistanceKm} km</span>
           </div>
           <div className="h-6 w-px bg-slate-800" />
           <div>
-            <span className="text-[10px] uppercase text-slate-400 font-bold block">Recorded Fixes</span>
+            <span className="text-[10px] uppercase text-slate-400 font-bold block">
+              Recorded Fixes
+            </span>
             <span className="text-sm font-bold text-indigo-400">{summary.totalPoints} points</span>
           </div>
+          {summary.maxSpeedKmh !== undefined && summary.maxSpeedKmh > 0 && (
+            <>
+              <div className="h-6 w-px bg-slate-800" />
+              <div>
+                <span className="text-[10px] uppercase text-slate-400 font-bold block">
+                  Max Speed
+                </span>
+                <span className="text-sm font-bold text-amber-400">{summary.maxSpeedKmh} km/h</span>
+              </div>
+            </>
+          )}
           <div className="h-6 w-px bg-slate-800" />
           <button
-            onClick={fetchLocationPoints}
+            onClick={() => fetchLocationPoints(false)}
             title="Refresh route data"
             className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingPoints ? 'animate-spin' : ''}`} />
           </button>
         </div>
+
+        {/* Floating Playback HUD Overlay on top right of map */}
+        {activePoint && (
+          <div className="absolute top-3 right-14 z-[400] bg-slate-950/90 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-2xl shadow-2xl hidden sm:flex items-center gap-3 text-xs">
+            <div>
+              <span className="text-[10px] uppercase text-slate-400 font-bold block">
+                Replay Time
+              </span>
+              <span className="text-xs font-bold text-white font-mono">
+                {new Date(activePoint.recordedAt).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </span>
+            </div>
+            <div className="h-6 w-px bg-slate-800" />
+            <div className="flex items-center gap-1.5">
+              {activePoint.mode === 'VEHICLE' && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                  <Car className="w-3 h-3" /> {activePoint.speedKmh} km/h
+                </span>
+              )}
+              {activePoint.mode === 'CYCLING' && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                  <Bike className="w-3 h-3" /> {activePoint.speedKmh} km/h
+                </span>
+              )}
+              {activePoint.mode === 'WALKING' && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                  <Footprints className="w-3 h-3" /> {activePoint.speedKmh} km/h
+                </span>
+              )}
+              {activePoint.mode === 'STATIONARY' && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  {activePoint.dwellMinutes ? `Stay ${activePoint.dwellMinutes}m` : 'Stationary'}
+                </span>
+              )}
+            </div>
+            {isPlaying && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 animate-pulse">
+                {playbackSpeed}x
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Floating Quick Map Re-center button */}
         <div className="absolute bottom-4 right-4 z-[400] flex flex-col gap-2">
@@ -882,7 +1369,7 @@ export default function LocationTimelineClient({
       {/* 3. Timeline Playback & Range Controls (Active on 'timeline' tab) */}
       {activeTab === 'timeline' && (
         <div className="p-5 border-t border-slate-800 bg-slate-950/60 space-y-4">
-          {/* Top row: Time range filters and playback stats */}
+          {/* Top row: Time range filters, camera lock, and playback speed */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Time range buttons */}
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -914,88 +1401,404 @@ export default function LocationTimelineClient({
               ))}
             </div>
 
-            {/* Playback speed selector */}
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-slate-400">Speed:</span>
-              {[1, 2, 5, 10].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setPlaybackSpeed(s)}
-                  className={`px-2 py-0.5 rounded-lg text-xs font-bold transition ${
-                    playbackSpeed === s
-                      ? 'bg-indigo-500/30 text-indigo-300 border border-indigo-500/40'
-                      : 'text-slate-500 hover:text-slate-300'
-                  }`}
-                >
-                  {s}x
-                </button>
-              ))}
+            {/* Right toolbar: Follow camera lock, loop & speed selector */}
+            <div className="flex items-center gap-2 text-xs flex-wrap">
+              {/* Follow Camera Lock Toggle */}
+              <button
+                type="button"
+                onClick={() => setFollowDevice(!followDevice)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition border ${
+                  followDevice
+                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+                }`}
+                title={followDevice ? 'Auto-centering camera is ON' : 'Free map pan is ON'}
+              >
+                <LocateFixed className="w-3.5 h-3.5" />
+                <span>{followDevice ? 'Follow: ON' : 'Follow: OFF'}</span>
+              </button>
+
+              {/* Loop Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsLooping(!isLooping)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1 transition border ${
+                  isLooping
+                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+                }`}
+                title={isLooping ? 'Looping is ON' : 'Looping is OFF'}
+              >
+                <Repeat className="w-3.5 h-3.5" />
+                <span>Loop</span>
+              </button>
+
+              {/* Playback speed selector */}
+              <div className="flex items-center gap-1 text-slate-400 pl-1">
+                <span>Speed:</span>
+                {[1, 2, 5, 10].map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setPlaybackSpeed(s)}
+                    className={`px-2 py-0.5 rounded-lg text-xs font-bold transition ${
+                      playbackSpeed === s
+                        ? 'bg-indigo-500/30 text-indigo-300 border border-indigo-500/40'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
+          {/* Activity Breakdown Overview Bar */}
+          {points.length > 0 && (
+            <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap p-2.5 bg-slate-950/40 border border-slate-800/80 rounded-2xl">
+              <span className="text-[11px] uppercase font-bold text-slate-400 flex items-center gap-1">
+                <MapPinned className="w-3.5 h-3.5 text-indigo-400" /> Summary:
+              </span>
+              {activityStats.vehicleKm > 0 && (
+                <div className="flex items-center gap-1 text-slate-300">
+                  <Car className="w-3.5 h-3.5 text-amber-400" />
+                  <span>
+                    Driving: <strong className="text-white">{activityStats.vehicleKm} km</strong>
+                  </span>
+                </div>
+              )}
+              {activityStats.walkKm > 0 && (
+                <div className="flex items-center gap-1 text-slate-300">
+                  <Footprints className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>
+                    Walking: <strong className="text-white">{activityStats.walkKm} km</strong>
+                  </span>
+                </div>
+              )}
+              {activityStats.cycleKm > 0 && (
+                <div className="flex items-center gap-1 text-slate-300">
+                  <Bike className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>
+                    Cycling: <strong className="text-white">{activityStats.cycleKm} km</strong>
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center gap-1 text-slate-300">
+                <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                <span>
+                  Stationary: <strong className="text-white">{activityStats.stayHours} hrs</strong>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Activity Chapters / Quick Jump Chips */}
+          {chapters.length > 0 && (
+            <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
+              <span className="text-[11px] text-slate-400 uppercase font-bold shrink-0 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-indigo-400" /> Activity Chapters:
+              </span>
+              {chapters.map((ch) => {
+                const isSelected =
+                  playbackIndex >= ch.startIndex && playbackIndex <= ch.endIndex;
+                return (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    onClick={() => {
+                      setIsPlaying(false);
+                      setPlaybackIndex(ch.startIndex);
+                      handleCenterOnPoint(
+                        points[ch.startIndex].latitude,
+                        points[ch.startIndex].longitude
+                      );
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 flex items-center gap-1.5 transition border ${
+                      isSelected
+                        ? 'bg-indigo-600 border-indigo-500 text-white shadow-md shadow-indigo-600/30'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {ch.type === 'STAY' ? (
+                      <span className="w-2 h-2 rounded-full bg-slate-400" />
+                    ) : ch.mode === 'VEHICLE' ? (
+                      <Car className="w-3 h-3 text-amber-400" />
+                    ) : ch.mode === 'CYCLING' ? (
+                      <Bike className="w-3 h-3 text-cyan-400" />
+                    ) : (
+                      <Footprints className="w-3 h-3 text-emerald-400" />
+                    )}
+                    <span>{ch.label}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      {new Date(ch.startTime).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* Scrubber slider and playback controls */}
           {points.length > 0 ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => setIsPlaying(!isPlaying)}
-                  className="p-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl shadow-lg shadow-indigo-600/20 transition flex items-center justify-center"
-                >
-                  {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsPlaying(false);
-                    setPlaybackIndex(0);
-                  }}
-                  title="Rewind to start"
-                  className="p-3 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-2xl transition"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                </button>
-
-                {/* Range Slider */}
-                <div className="flex-1 space-y-1">
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(0, points.length - 1)}
-                    value={playbackIndex}
-                    onChange={(e) => {
-                      setIsPlaying(false);
-                      setPlaybackIndex(Number(e.target.value));
-                    }}
-                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                  />
-                  <div className="flex justify-between text-[11px] text-slate-500 font-mono">
-                    <span>{summary.startTime ? new Date(summary.startTime).toLocaleTimeString() : 'Start'}</span>
-                    <span>
-                      Checkpoint {playbackIndex + 1} of {points.length}
+            <div className="space-y-4">
+              {/* Visual Activity Heatmap Slider Track with Hover Tooltip */}
+              <div
+                className="relative w-full pt-6 pb-2 cursor-pointer select-none group"
+                onMouseMove={handleSliderMouseMove}
+                onMouseLeave={handleSliderMouseLeave}
+              >
+                {/* Floating Hover Preview Card */}
+                {hoverPoint && (
+                  <div
+                    style={{ left: `${hoverPercent}%` }}
+                    className="absolute top-0 -translate-x-1/2 pointer-events-none z-30 bg-slate-900/95 backdrop-blur-md border border-slate-700/80 px-2.5 py-1 rounded-xl shadow-2xl flex items-center gap-2 text-[11px] whitespace-nowrap"
+                  >
+                    <span className="font-bold text-white font-mono">
+                      {new Date(hoverPoint.recordedAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })}
                     </span>
-                    <span>{summary.endTime ? new Date(summary.endTime).toLocaleTimeString() : 'Latest'}</span>
+                    <div className="w-px h-3 bg-slate-700" />
+                    {hoverPoint.mode === 'VEHICLE' && (
+                      <span className="text-amber-400 font-semibold flex items-center gap-1">
+                        <Car className="w-3 h-3" /> {hoverPoint.speedKmh} km/h
+                      </span>
+                    )}
+                    {hoverPoint.mode === 'CYCLING' && (
+                      <span className="text-cyan-400 font-semibold flex items-center gap-1">
+                        <Bike className="w-3 h-3" /> {hoverPoint.speedKmh} km/h
+                      </span>
+                    )}
+                    {hoverPoint.mode === 'WALKING' && (
+                      <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                        <Footprints className="w-3 h-3" /> {hoverPoint.speedKmh} km/h
+                      </span>
+                    )}
+                    {hoverPoint.mode === 'STATIONARY' && (
+                      <span className="text-slate-400 font-semibold flex items-center gap-1">
+                        <div className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                        {hoverPoint.dwellMinutes ? `Stay ${hoverPoint.dwellMinutes}m` : 'Stay'}
+                      </span>
+                    )}
+                    <div className="w-px h-3 bg-slate-700" />
+                    <span className="text-slate-400 font-mono">🔋{hoverPoint.batteryLevel}%</span>
                   </div>
+                )}
+
+                {/* Activity Spectrum Bar */}
+                <div className="relative w-full h-3.5 rounded-full overflow-hidden bg-slate-950 border border-slate-800 flex shadow-inner">
+                  {chapters.map((ch) => {
+                    const segWidth =
+                      ((ch.endIndex - ch.startIndex + 1) / Math.max(1, points.length)) * 100;
+                    let bg = 'bg-slate-800';
+                    if (ch.type === 'STAY') bg = 'bg-slate-700/60';
+                    else if (ch.mode === 'VEHICLE') bg = 'bg-amber-500/80';
+                    else if (ch.mode === 'CYCLING') bg = 'bg-cyan-500/80';
+                    else if (ch.mode === 'WALKING') bg = 'bg-emerald-500/80';
+
+                    return (
+                      <div
+                        key={ch.id}
+                        style={{ width: `${segWidth}%` }}
+                        className={`h-full transition-opacity ${bg} hover:opacity-90`}
+                        title={`${ch.label} (${new Date(ch.startTime).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })})`}
+                      />
+                    );
+                  })}
+
+                  {/* Traveled progress fill overlay */}
+                  <div
+                    style={{
+                      width: `${(playbackIndex / Math.max(1, points.length - 1)) * 100}%`,
+                    }}
+                    className="absolute top-0 bottom-0 left-0 bg-indigo-500/35 border-r-2 border-indigo-400 pointer-events-none"
+                  />
+                </div>
+
+                {/* Invisible input range on top for scrubbing */}
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, points.length - 1)}
+                  value={playbackIndex}
+                  onChange={(e) => {
+                    setIsPlaying(false);
+                    setPlaybackIndex(Number(e.target.value));
+                  }}
+                  className="absolute inset-x-0 bottom-1.5 w-full h-4 opacity-0 cursor-pointer z-20"
+                />
+
+                {/* Custom glowing scrubber thumb */}
+                <div
+                  style={{
+                    left: `${(playbackIndex / Math.max(1, points.length - 1)) * 100}%`,
+                  }}
+                  className="absolute bottom-3.5 -translate-x-1/2 w-4 h-4 rounded-full bg-white border-2 border-indigo-600 shadow-xl pointer-events-none z-10 ring-4 ring-indigo-500/40"
+                />
+              </div>
+
+              {/* Playback Control Bar with Step & Jump Buttons */}
+              <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                {/* Playback Buttons Group */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPlaying(false);
+                      setPlaybackIndex(0);
+                    }}
+                    title="Rewind to start"
+                    className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleJumpPrevChapter}
+                    title="Jump to previous activity chapter"
+                    className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
+                  >
+                    <SkipBack className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleStepBack}
+                    title="Step backward 1 checkpoint"
+                    className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+
+                  {/* Main Play / Pause Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center justify-center font-bold text-xs gap-1.5"
+                  >
+                    {isPlaying ? (
+                      <>
+                        <Pause className="w-4 h-4" /> Pause
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 ml-0.5" /> Play Replay
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleStepForward}
+                    title="Step forward 1 checkpoint"
+                    className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleJumpNextChapter}
+                    title="Jump to next activity chapter"
+                    className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
+                  >
+                    <SkipForward className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Center / Right Timestamp & Checkpoint Info */}
+                <div className="flex items-center gap-3 text-xs text-slate-400 font-mono">
+                  <span>
+                    {summary.startTime
+                      ? new Date(summary.startTime).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Start'}
+                  </span>
+                  <div className="h-4 w-px bg-slate-800" />
+                  <span className="text-white font-semibold">
+                    Checkpoint {playbackIndex + 1} of {points.length}
+                  </span>
+                  <div className="h-4 w-px bg-slate-800" />
+                  <span>
+                    {summary.endTime
+                      ? new Date(summary.endTime).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Latest'}
+                  </span>
                 </div>
               </div>
 
-              {/* Point Inspector Card */}
+              {/* Point Inspector Card with Transit Mode, Speed & Battery */}
               {activePoint && (
-                <div className="p-3 bg-slate-950/80 border border-slate-800/80 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="p-3.5 bg-slate-950/80 border border-slate-800/80 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-lg">
                   <div className="flex items-center gap-3">
                     <div className="w-2.5 h-2.5 rounded-full bg-indigo-400 animate-pulse" />
                     <div>
-                      <span className="font-semibold text-white block">
-                        {new Date(activePoint.recordedAt).toLocaleString()}
-                      </span>
-                      <span className="text-[11px] text-slate-400 font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white">
+                          {new Date(activePoint.recordedAt).toLocaleString()}
+                        </span>
+                        {/* Transit Mode Pill */}
+                        {activePoint.mode === 'WALKING' && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                            <Footprints className="w-3 h-3" /> Walking
+                          </span>
+                        )}
+                        {activePoint.mode === 'CYCLING' && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                            <Bike className="w-3 h-3" /> Cycling
+                          </span>
+                        )}
+                        {activePoint.mode === 'VEHICLE' && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <Car className="w-3 h-3" /> In Vehicle
+                          </span>
+                        )}
+                        {activePoint.mode === 'STATIONARY' && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
+                            <div className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                            {activePoint.dwellMinutes
+                              ? `Stay (${activePoint.dwellMinutes}m)`
+                              : 'Stationary'}
+                          </span>
+                        )}
+
+                        {activeChapter && (
+                          <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">
+                            • Part of: {activeChapter.label}
+                          </span>
+                        )}
+                      </div>
+
+                      <span className="text-[11px] text-slate-400 font-mono mt-0.5 block">
                         {activePoint.latitude.toFixed(6)}, {activePoint.longitude.toFixed(6)}
                       </span>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-4 text-slate-300">
+                    {/* Speed Indicator */}
+                    {activePoint.speedKmh !== undefined && activePoint.speedKmh > 0 && (
+                      <div className="flex items-center gap-1 text-slate-300 font-mono">
+                        <Gauge className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>{activePoint.speedKmh} km/h</span>
+                      </div>
+                    )}
+
+                    {/* Battery Indicator */}
                     <div className="flex items-center gap-1.5">
                       {activePoint.isCharging ? (
                         <BatteryCharging className="w-4 h-4 text-emerald-400" />
@@ -1005,6 +1808,7 @@ export default function LocationTimelineClient({
                       <span>{activePoint.batteryLevel}%</span>
                     </div>
 
+                    {/* Accuracy Indicator */}
                     {activePoint.accuracy !== undefined && (
                       <div className="flex items-center gap-1 text-slate-400">
                         <Crosshair className="w-3.5 h-3.5" />
@@ -1014,7 +1818,9 @@ export default function LocationTimelineClient({
 
                     <button
                       type="button"
-                      onClick={() => handleCenterOnPoint(activePoint.latitude, activePoint.longitude)}
+                      onClick={() =>
+                        handleCenterOnPoint(activePoint.latitude, activePoint.longitude)
+                      }
                       className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-indigo-400 border border-slate-800 rounded-lg text-[11px] font-medium transition"
                     >
                       Focus
@@ -1027,7 +1833,8 @@ export default function LocationTimelineClient({
             <div className="py-6 text-center text-xs text-slate-500 space-y-1">
               <p>No location points recorded within this time window.</p>
               <p className="text-[11px] text-slate-600">
-                Points are synced automatically when the device sends location updates. Try selecting &quot;All Time&quot;.
+                Points are synced automatically when the device sends location updates. Try
+                selecting &quot;All Time&quot;.
               </p>
             </div>
           )}
@@ -1056,7 +1863,8 @@ export default function LocationTimelineClient({
               <AlertTriangle className="w-6 h-6 text-amber-400 mx-auto" />
               <p className="font-semibold text-slate-200">No Geofences Configured</p>
               <p className="text-slate-500 text-[11px] max-w-sm mx-auto">
-                Set boundaries around Home, School, or other important areas to receive instant Telegram notifications when the child enters or leaves.
+                Set boundaries around Home, School, or other important areas to receive instant
+                Telegram notifications when the child enters or leaves.
               </p>
               <button
                 onClick={handleOpenAddGeofence}
@@ -1131,7 +1939,9 @@ export default function LocationTimelineClient({
 
                     <div className="flex justify-between">
                       <span>Radius:</span>
-                      <span className="text-slate-200 font-mono font-medium">{fence.radius} meters</span>
+                      <span className="text-slate-200 font-mono font-medium">
+                        {fence.radius} meters
+                      </span>
                     </div>
 
                     <div className="flex justify-between">
@@ -1143,7 +1953,11 @@ export default function LocationTimelineClient({
 
                     <div className="flex justify-between">
                       <span>Telegram Alert:</span>
-                      <span className={fence.notifyTelegram ? 'text-sky-400 font-medium' : 'text-slate-500'}>
+                      <span
+                        className={
+                          fence.notifyTelegram ? 'text-sky-400 font-medium' : 'text-slate-500'
+                        }
+                      >
                         {fence.notifyTelegram ? 'Enabled' : 'Disabled'}
                       </span>
                     </div>
@@ -1191,7 +2005,8 @@ export default function LocationTimelineClient({
             <div className="py-8 text-center text-xs text-slate-500">
               <p>No geofence breach or entry events recorded yet.</p>
               <p className="text-[11px] text-slate-600 mt-0.5">
-                When the child device moves across any active boundary, ENTER and EXIT logs will show here.
+                When the child device moves across any active boundary, ENTER and EXIT logs will
+                show here.
               </p>
             </div>
           ) : (
@@ -1222,7 +2037,9 @@ export default function LocationTimelineClient({
                         </span>
                       </td>
                       <td className="py-2.5 px-3 font-semibold text-white">{evt.geofenceName}</td>
-                      <td className="py-2.5 px-3 text-slate-400 font-mono">{evt.distanceFromCenter}m</td>
+                      <td className="py-2.5 px-3 text-slate-400 font-mono">
+                        {evt.distanceFromCenter}m
+                      </td>
                       <td className="py-2.5 px-3 text-slate-400 font-mono">
                         {new Date(evt.timestamp).toLocaleString()}
                       </td>
@@ -1290,7 +2107,9 @@ export default function LocationTimelineClient({
               {/* Coordinates & Map Pinning */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-slate-400 uppercase font-semibold">Center Coordinates</label>
+                  <label className="text-slate-400 uppercase font-semibold">
+                    Center Coordinates
+                  </label>
                   <button
                     type="button"
                     onClick={handleStartPinning}
@@ -1360,7 +2179,9 @@ export default function LocationTimelineClient({
 
               {/* Color selection */}
               <div>
-                <label className="block text-slate-400 uppercase font-semibold mb-1.5">Zone Color</label>
+                <label className="block text-slate-400 uppercase font-semibold mb-1.5">
+                  Zone Color
+                </label>
                 <div className="flex items-center gap-2">
                   {PRESET_COLORS.map((col) => (
                     <button
@@ -1369,7 +2190,9 @@ export default function LocationTimelineClient({
                       onClick={() => setFormColor(col.hex)}
                       style={{ backgroundColor: col.hex }}
                       className={`w-7 h-7 rounded-xl transition ${
-                        formColor === col.hex ? 'ring-2 ring-white scale-110' : 'opacity-80 hover:opacity-100'
+                        formColor === col.hex
+                          ? 'ring-2 ring-white scale-110'
+                          : 'opacity-80 hover:opacity-100'
                       }`}
                       title={col.name}
                     />
