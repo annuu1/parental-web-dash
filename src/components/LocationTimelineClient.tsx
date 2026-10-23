@@ -37,6 +37,11 @@ import {
   ChevronRight,
   Repeat,
   MapPinned,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Minimize2,
+  CalendarDays,
 } from 'lucide-react';
 
 export type TransitMode = 'STATIONARY' | 'WALKING' | 'CYCLING' | 'VEHICLE';
@@ -68,6 +73,14 @@ export interface ActivityChapter {
   maxSpeedKmh: number;
   avgSpeedKmh: number;
   label: string;
+}
+
+export interface DayMarker {
+  dateStr: string; // e.g. "Mon, Oct 14"
+  startIndex: number;
+  endIndex: number;
+  startRatio: number;
+  endRatio: number;
 }
 
 export interface GeofenceItem {
@@ -220,6 +233,47 @@ export function computeActivityChapters(points: LocationPoint[]): ActivityChapte
   return chapters;
 }
 
+export function computeDayMarkers(points: LocationPoint[]): DayMarker[] {
+  if (!points || points.length === 0) return [];
+  const markers: DayMarker[] = [];
+  let currentDay = '';
+  let startIdx = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    const d = new Date(points[i].recordedAt);
+    const dayStr = d.toLocaleDateString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    if (dayStr !== currentDay) {
+      if (currentDay !== '') {
+        markers.push({
+          dateStr: currentDay,
+          startIndex: startIdx,
+          endIndex: i - 1,
+          startRatio: startIdx / points.length,
+          endRatio: i / points.length,
+        });
+      }
+      currentDay = dayStr;
+      startIdx = i;
+    }
+  }
+
+  if (currentDay !== '') {
+    markers.push({
+      dateStr: currentDay,
+      startIndex: startIdx,
+      endIndex: points.length - 1,
+      startRatio: startIdx / points.length,
+      endRatio: 1,
+    });
+  }
+
+  return markers;
+}
+
 export default function LocationTimelineClient({
   deviceId,
   deviceName,
@@ -266,6 +320,26 @@ export default function LocationTimelineClient({
   const followDeviceRef = useRef(true);
   followDeviceRef.current = followDevice;
 
+  // Zoom Timeline Range: [startRatio, endRatio] where 0.0 <= start < end <= 1.0
+  const [zoomRange, setZoomRange] = useState<[number, number]>([0, 1]);
+  const zoomStart = zoomRange[0];
+  const zoomEnd = zoomRange[1];
+  const isZoomed = zoomStart > 0.005 || zoomEnd < 0.995;
+
+  // Dragging state for Minimap Selection Window
+  type DragMode = 'WINDOW' | 'LEFT_HANDLE' | 'RIGHT_HANDLE';
+  interface DragState {
+    mode: DragMode;
+    startX: number;
+    initialStart: number;
+    initialEnd: number;
+  }
+  const [dragState, setDragState] = useState<DragState | null>(null);
+
+  // Refs for interactive zoom and scrubber
+  const minimapRef = useRef<HTMLDivElement | null>(null);
+  const sliderContainerRef = useRef<HTMLDivElement | null>(null);
+
   // Slider Hover Preview states
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [hoverPercent, setHoverPercent] = useState<number>(0);
@@ -297,8 +371,26 @@ export default function LocationTimelineClient({
   const [formNotifyTelegram, setFormNotifyTelegram] = useState(true);
   const [submittingGeofence, setSubmittingGeofence] = useState(false);
 
-  // Chapters & Activity Breakdown
+  // Derived Zoom Indices
+  const zoomStartIndex = useMemo(() => {
+    if (points.length === 0) return 0;
+    return Math.min(points.length - 1, Math.max(0, Math.floor(zoomStart * points.length)));
+  }, [zoomStart, points.length]);
+
+  const zoomEndIndex = useMemo(() => {
+    if (points.length === 0) return 0;
+    return Math.min(
+      points.length - 1,
+      Math.max(zoomStartIndex + 1, Math.ceil(zoomEnd * points.length) - 1)
+    );
+  }, [zoomEnd, zoomStartIndex, points.length]);
+
+  const visiblePointsCount = Math.max(1, zoomEndIndex - zoomStartIndex + 1);
+
+  // Chapters & Day Markers
   const chapters = useMemo(() => computeActivityChapters(points), [points]);
+  const dayMarkers = useMemo(() => computeDayMarkers(points), [points]);
+
   const activeChapter = useMemo(() => {
     return chapters.find((ch) => playbackIndex >= ch.startIndex && playbackIndex <= ch.endIndex);
   }, [chapters, playbackIndex]);
@@ -368,6 +460,11 @@ export default function LocationTimelineClient({
     [deviceId, timeRange]
   );
 
+  // Reset zoom range whenever time range filter changes
+  useEffect(() => {
+    setZoomRange([0, 1]);
+  }, [timeRange]);
+
   // Live Auto-Refresh Interval
   useEffect(() => {
     if (!isLiveAutoRefresh) return;
@@ -424,6 +521,86 @@ export default function LocationTimelineClient({
     fetchGeofences();
     fetchGeofenceEvents();
   }, [fetchLocationPoints, fetchGeofences, fetchGeofenceEvents]);
+
+  // Non-passive Mouse Wheel Listener for zoom on the main slider track
+  useEffect(() => {
+    const el = sliderContainerRef.current;
+    if (!el || points.length === 0) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) < 2) return;
+      e.preventDefault();
+
+      const rect = el.getBoundingClientRect();
+      const cursorRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+      setZoomRange(([currStart, currEnd]) => {
+        const currentSpan = currEnd - currStart;
+        const targetRatio = currStart + cursorRatio * currentSpan;
+        const zoomFactor = e.deltaY < 0 ? 0.78 : 1.28;
+        const minSpan = Math.max(0.005, 5 / Math.max(1, points.length));
+        const newSpan = Math.max(minSpan, Math.min(1, currentSpan * zoomFactor));
+
+        let newStart = targetRatio - cursorRatio * newSpan;
+        let newEnd = newStart + newSpan;
+
+        if (newStart < 0) {
+          newStart = 0;
+          newEnd = Math.min(1, newSpan);
+        }
+        if (newEnd > 1) {
+          newEnd = 1;
+          newStart = Math.max(0, 1 - newSpan);
+        }
+
+        return [newStart, newEnd];
+      });
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [points.length]);
+
+  // Minimap Pointer Dragging Effect (Handles & Center Viewport)
+  useEffect(() => {
+    if (!dragState) return;
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!minimapRef.current) return;
+      const rect = minimapRef.current.getBoundingClientRect();
+      if (rect.width === 0) return;
+
+      const dx = e.clientX - dragState.startX;
+      const deltaRatio = dx / rect.width;
+      const minSpan = Math.max(0.005, 5 / Math.max(1, points.length));
+
+      if (dragState.mode === 'WINDOW') {
+        const span = dragState.initialEnd - dragState.initialStart;
+        let newStart = dragState.initialStart + deltaRatio;
+        newStart = Math.max(0, Math.min(1 - span, newStart));
+        setZoomRange([newStart, newStart + span]);
+      } else if (dragState.mode === 'LEFT_HANDLE') {
+        let newStart = dragState.initialStart + deltaRatio;
+        newStart = Math.max(0, Math.min(dragState.initialEnd - minSpan, newStart));
+        setZoomRange([newStart, dragState.initialEnd]);
+      } else if (dragState.mode === 'RIGHT_HANDLE') {
+        let newEnd = dragState.initialEnd + deltaRatio;
+        newEnd = Math.min(1, Math.max(dragState.initialStart + minSpan, newEnd));
+        setZoomRange([dragState.initialStart, newEnd]);
+      }
+    };
+
+    const onPointerUp = () => {
+      setDragState(null);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [dragState, points.length]);
 
   // Helper: create custom SVG div icons
   const createPulseDivIcon = (color: string = '#10b981') => {
@@ -913,7 +1090,7 @@ export default function LocationTimelineClient({
     }
   }, [playbackIndex, points]);
 
-  // 8. Playback loop (with loop mode support)
+  // 8. Playback loop (scoping to zoom window and respecting loop mode)
   useEffect(() => {
     if (!isPlaying) {
       if (playbackTimerRef.current) clearInterval(playbackTimerRef.current);
@@ -924,9 +1101,12 @@ export default function LocationTimelineClient({
 
     playbackTimerRef.current = setInterval(() => {
       setPlaybackIndex((prev) => {
-        if (prev >= points.length - 1) {
+        const maxIdx = isZoomed ? zoomEndIndex : points.length - 1;
+        const minIdx = isZoomed ? zoomStartIndex : 0;
+
+        if (prev >= maxIdx) {
           if (isLooping) {
-            return 0;
+            return minIdx;
           }
           setIsPlaying(false);
           return prev;
@@ -938,7 +1118,7 @@ export default function LocationTimelineClient({
     return () => {
       if (playbackTimerRef.current) clearInterval(playbackTimerRef.current);
     };
-  }, [isPlaying, playbackSpeed, points.length, isLooping]);
+  }, [isPlaying, playbackSpeed, points.length, isLooping, isZoomed, zoomStartIndex, zoomEndIndex]);
 
   // 9. Draft Geofence Circle on Map while adjusting modal
   useEffect(() => {
@@ -1090,6 +1270,48 @@ export default function LocationTimelineClient({
     }
   };
 
+  // Fit Leaflet Map camera to only the visible zoomed slice of points
+  const handleFitMapToZoomedWindow = () => {
+    const map = mapInstanceRef.current;
+    if (!map || points.length === 0) return;
+    const slice = points.slice(zoomStartIndex, zoomEndIndex + 1);
+    if (slice.length === 0) return;
+    const latLngs = slice.map((p) => [p.latitude, p.longitude] as [number, number]);
+    const bounds = L.latLngBounds(latLngs);
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 17 });
+    }
+  };
+
+  // Quick Zoom Preset Helpers
+  const handleZoomPreset = (type: 'all' | '7d' | '24h' | '4h') => {
+    if (points.length === 0) return;
+    if (type === 'all') {
+      setZoomRange([0, 1]);
+      return;
+    }
+
+    const latestMs = new Date(points[points.length - 1].recordedAt).getTime();
+    let hours = 24;
+    if (type === '7d') hours = 7 * 24;
+    if (type === '4h') hours = 4;
+
+    const targetTimeMs = latestMs - hours * 3600 * 1000;
+    const idx = points.findIndex((p) => new Date(p.recordedAt).getTime() >= targetTimeMs);
+    const startRatio = idx >= 0 ? idx / points.length : 0;
+    setZoomRange([startRatio, 1]);
+    setPlaybackIndex(idx >= 0 ? idx : 0);
+  };
+
+  // Zoom directly to an Activity Chapter
+  const handleZoomToChapter = (ch: ActivityChapter) => {
+    const startRatio = ch.startIndex / points.length;
+    const endRatio = Math.min(1, (ch.endIndex + 1) / points.length);
+    setZoomRange([startRatio, endRatio]);
+    setPlaybackIndex(ch.startIndex);
+    handleCenterOnPoint(points[ch.startIndex].latitude, points[ch.startIndex].longitude);
+  };
+
   // Playback Navigation Helpers
   const handleJumpPrevChapter = () => {
     setIsPlaying(false);
@@ -1103,7 +1325,7 @@ export default function LocationTimelineClient({
         return;
       }
     }
-    setPlaybackIndex(0);
+    setPlaybackIndex(zoomStartIndex);
   };
 
   const handleJumpNextChapter = () => {
@@ -1118,30 +1340,31 @@ export default function LocationTimelineClient({
         return;
       }
     }
-    if (points.length > 0) {
-      setPlaybackIndex(points.length - 1);
-    }
+    setPlaybackIndex(zoomEndIndex);
   };
 
   const handleStepBack = () => {
     setIsPlaying(false);
-    setPlaybackIndex((prev) => Math.max(0, prev - 1));
+    setPlaybackIndex((prev) => Math.max(zoomStartIndex, prev - 1));
   };
 
   const handleStepForward = () => {
     setIsPlaying(false);
-    setPlaybackIndex((prev) => Math.min(points.length - 1, prev + 1));
+    setPlaybackIndex((prev) => Math.min(zoomEndIndex, prev + 1));
   };
 
-  // Slider Mouse Move / Hover Preview
+  // Zoomed Main Slider Mouse Move / Hover Preview
   const handleSliderMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (points.length === 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const pct = (x / rect.width) * 100;
     const idx = Math.min(
-      points.length - 1,
-      Math.max(0, Math.round((pct / 100) * (points.length - 1)))
+      zoomEndIndex,
+      Math.max(
+        zoomStartIndex,
+        zoomStartIndex + Math.round((pct / 100) * (zoomEndIndex - zoomStartIndex))
+      )
     );
     setHoverPercent(pct);
     setHoverIndex(idx);
@@ -1151,8 +1374,30 @@ export default function LocationTimelineClient({
     setHoverIndex(null);
   };
 
+  // Minimap Click Jump
+  const handleMinimapClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!minimapRef.current || dragState) return;
+    const rect = minimapRef.current.getBoundingClientRect();
+    const clickRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const span = zoomEnd - zoomStart;
+    let newStart = clickRatio - span / 2;
+    let newEnd = newStart + span;
+    if (newStart < 0) {
+      newStart = 0;
+      newEnd = Math.min(1, span);
+    }
+    if (newEnd > 1) {
+      newEnd = 1;
+      newStart = Math.max(0, 1 - span);
+    }
+    setZoomRange([newStart, newEnd]);
+  };
+
   const activePoint = points[playbackIndex] || null;
   const hoverPoint = hoverIndex !== null && points[hoverIndex] ? points[hoverIndex] : null;
+
+  // Zoom magnification factor
+  const zoomFactor = Number((1 / Math.max(0.001, zoomEnd - zoomStart)).toFixed(1));
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl flex flex-col space-y-0">
@@ -1170,7 +1415,7 @@ export default function LocationTimelineClient({
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Interactive GPS path tracking, historical timeline playback, and automated boundary alerts.
+              Interactive GPS path tracking, zoomable historical timeline, and automated boundary alerts.
             </p>
           </div>
         </div>
@@ -1496,7 +1741,7 @@ export default function LocationTimelineClient({
           {chapters.length > 0 && (
             <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
               <span className="text-[11px] text-slate-400 uppercase font-bold shrink-0 flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5 text-indigo-400" /> Activity Chapters:
+                <Clock className="w-3.5 h-3.5 text-indigo-400" /> Chapters:
               </span>
               {chapters.map((ch) => {
                 const isSelected =
@@ -1505,14 +1750,7 @@ export default function LocationTimelineClient({
                   <button
                     key={ch.id}
                     type="button"
-                    onClick={() => {
-                      setIsPlaying(false);
-                      setPlaybackIndex(ch.startIndex);
-                      handleCenterOnPoint(
-                        points[ch.startIndex].latitude,
-                        points[ch.startIndex].longitude
-                      );
-                    }}
+                    onClick={() => handleZoomToChapter(ch)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 flex items-center gap-1.5 transition border ${
                       isSelected
                         ? 'bg-indigo-600 border-indigo-500 text-white shadow-md shadow-indigo-600/30'
@@ -1541,11 +1779,251 @@ export default function LocationTimelineClient({
             </div>
           )}
 
-          {/* Scrubber slider and playback controls */}
+          {/* ═════════════════════════════════════════════════════════════════════════ */}
+          {/* 4. OVERVIEW MINIMAP STRIP (Multi-day Viewport Lens & Zoom Controls)      */}
+          {/* ═════════════════════════════════════════════════════════════════════════ */}
+          {points.length > 0 && (
+            <div className="p-3.5 bg-slate-950/70 border border-slate-800/90 rounded-2xl space-y-2.5">
+              {/* Minimap Toolbar Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-300 flex items-center gap-1 text-[11px] uppercase tracking-wider">
+                    <Maximize2 className="w-3.5 h-3.5 text-indigo-400" />
+                    Timeline Overview ({points.length} points)
+                  </span>
+                  {isZoomed && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {zoomFactor}x Zoomed ({visiblePointsCount} points visible)
+                    </span>
+                  )}
+                </div>
+
+                {/* Quick Zoom Presets */}
+                <div className="flex items-center gap-1 text-[11px]">
+                  <span className="text-slate-500 mr-1 hidden sm:inline">Zoom Window:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleZoomPreset('all')}
+                    className={`px-2 py-0.5 rounded-lg font-medium transition border ${
+                      !isZoomed
+                        ? 'bg-indigo-600 border-indigo-500 text-white font-bold'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    100% Full
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleZoomPreset('7d')}
+                    className="px-2 py-0.5 rounded-lg font-medium bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
+                  >
+                    7 Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleZoomPreset('24h')}
+                    className="px-2 py-0.5 rounded-lg font-medium bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
+                  >
+                    24h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleZoomPreset('4h')}
+                    className="px-2 py-0.5 rounded-lg font-medium bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
+                  >
+                    4 Hours
+                  </button>
+                  {isZoomed && (
+                    <button
+                      type="button"
+                      onClick={handleFitMapToZoomedWindow}
+                      className="px-2 py-0.5 rounded-lg font-medium bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30 transition flex items-center gap-1"
+                      title="Fit map boundaries to only the points inside the zoomed window"
+                    >
+                      <Crosshair className="w-3 h-3" />
+                      <span>Fit Map</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Minimap Track with Selection Lens Viewport */}
+              <div
+                ref={minimapRef}
+                onClick={handleMinimapClick}
+                className="relative w-full h-8 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden cursor-pointer select-none flex items-center shadow-inner"
+              >
+                {/* Full 30-Day Activity Spectrum Barcode in Background */}
+                <div className="absolute inset-0 flex pointer-events-none opacity-85">
+                  {chapters.map((ch) => {
+                    const segWidth =
+                      ((ch.endIndex - ch.startIndex + 1) / Math.max(1, points.length)) * 100;
+                    let bg = 'bg-slate-800';
+                    if (ch.type === 'STAY') bg = 'bg-slate-700/60';
+                    else if (ch.mode === 'VEHICLE') bg = 'bg-amber-500/80';
+                    else if (ch.mode === 'CYCLING') bg = 'bg-cyan-500/80';
+                    else if (ch.mode === 'WALKING') bg = 'bg-emerald-500/80';
+
+                    return (
+                      <div
+                        key={ch.id}
+                        style={{ width: `${segWidth}%` }}
+                        className={`h-full ${bg}`}
+                      />
+                    );
+                  })}
+                </div>
+
+                {/* Current Playback Marker Position in the Whole Spectrum */}
+                <div
+                  style={{
+                    left: `${(playbackIndex / Math.max(1, points.length - 1)) * 100}%`,
+                  }}
+                  className="absolute top-0 bottom-0 w-0.5 bg-red-400 z-10 pointer-events-none shadow-sm"
+                  title="Current playhead position"
+                />
+
+                {/* Left Dimmed Non-Selected Region */}
+                <div
+                  style={{ width: `${zoomStart * 100}%` }}
+                  className="absolute top-0 bottom-0 left-0 bg-slate-950/75 backdrop-blur-[1.5px] pointer-events-none z-10 border-r border-indigo-500/40"
+                />
+
+                {/* Right Dimmed Non-Selected Region */}
+                <div
+                  style={{ width: `${(1 - zoomEnd) * 100}%` }}
+                  className="absolute top-0 bottom-0 right-0 bg-slate-950/75 backdrop-blur-[1.5px] pointer-events-none z-10 border-l border-indigo-500/40"
+                />
+
+                {/* Interactive Zoom Selection Lens Window */}
+                <div
+                  style={{
+                    left: `${zoomStart * 100}%`,
+                    width: `${(zoomEnd - zoomStart) * 100}%`,
+                  }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setDragState({
+                      mode: 'WINDOW',
+                      startX: e.clientX,
+                      initialStart: zoomStart,
+                      initialEnd: zoomEnd,
+                    });
+                  }}
+                  className={`absolute top-0 bottom-0 border-y-2 border-indigo-500 bg-indigo-500/10 shadow-lg z-20 flex items-center justify-between cursor-grab active:cursor-grabbing group ${
+                    dragState?.mode === 'WINDOW' ? 'cursor-grabbing' : ''
+                  }`}
+                  title="Drag to pan zoom window across time"
+                >
+                  {/* Left Resize Handle */}
+                  <div
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      setDragState({
+                        mode: 'LEFT_HANDLE',
+                        startX: e.clientX,
+                        initialStart: zoomStart,
+                        initialEnd: zoomEnd,
+                      });
+                    }}
+                    className="w-3.5 h-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center cursor-ew-resize select-none shadow-md z-30 transition-colors"
+                    title="Drag to adjust zoom start"
+                  >
+                    <div className="w-0.5 h-3 bg-white/70 rounded-full" />
+                  </div>
+
+                  {/* Center Label (Time Window Span) */}
+                  <div className="px-1 text-[10px] font-bold text-white/90 drop-shadow truncate pointer-events-none select-none font-mono">
+                    {points[zoomStartIndex] && points[zoomEndIndex] && (
+                      <span>
+                        {new Date(points[zoomStartIndex].recordedAt).toLocaleDateString([], {
+                          month: 'short',
+                          day: 'numeric',
+                        })}{' '}
+                        -{' '}
+                        {new Date(points[zoomEndIndex].recordedAt).toLocaleDateString([], {
+                          month: 'short',
+                          day: 'numeric',
+                        })}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Right Resize Handle */}
+                  <div
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      setDragState({
+                        mode: 'RIGHT_HANDLE',
+                        startX: e.clientX,
+                        initialStart: zoomStart,
+                        initialEnd: zoomEnd,
+                      });
+                    }}
+                    className="w-3.5 h-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center cursor-ew-resize select-none shadow-md z-30 transition-colors"
+                    title="Drag to adjust zoom end"
+                  >
+                    <div className="w-0.5 h-3 bg-white/70 rounded-full" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Day Markers Row (One-Click Date Snapping) */}
+              {dayMarkers.length > 1 && (
+                <div className="flex items-center gap-1.5 overflow-x-auto pt-1 pb-0.5 scrollbar-thin">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 shrink-0 flex items-center gap-1">
+                    <CalendarDays className="w-3 h-3 text-indigo-400" /> Days:
+                  </span>
+                  {dayMarkers.map((day) => (
+                    <button
+                      key={day.dateStr}
+                      type="button"
+                      onClick={() => {
+                        setZoomRange([day.startRatio, day.endRatio]);
+                        setPlaybackIndex(day.startIndex);
+                        handleCenterOnPoint(
+                          points[day.startIndex].latitude,
+                          points[day.startIndex].longitude
+                        );
+                      }}
+                      className="px-2 py-0.5 bg-slate-900 hover:bg-indigo-600/30 text-slate-400 hover:text-white border border-slate-800 rounded-md text-[10px] font-medium shrink-0 transition"
+                      title={`Zoom to ${day.dateStr}`}
+                    >
+                      {day.dateStr}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ═════════════════════════════════════════════════════════════════════════ */}
+          {/* 5. MAIN DETAIL PLAYBACK SLIDER (Stretched to Zoom Window)               */}
+          {/* ═════════════════════════════════════════════════════════════════════════ */}
           {points.length > 0 ? (
             <div className="space-y-4">
+              {/* Zoom Hints Banner */}
+              <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
+                <span className="flex items-center gap-1.5 text-indigo-300 font-medium">
+                  <ZoomIn className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>
+                    Scroll mouse wheel over slider to zoom in/out • Drag handles on overview bar
+                  </span>
+                </span>
+                {isZoomed && (
+                  <button
+                    type="button"
+                    onClick={() => setZoomRange([0, 1])}
+                    className="text-xs text-indigo-400 hover:underline font-semibold"
+                  >
+                    Reset to 100%
+                  </button>
+                )}
+              </div>
+
               {/* Visual Activity Heatmap Slider Track with Hover Tooltip */}
               <div
+                ref={sliderContainerRef}
                 className="relative w-full pt-6 pb-2 cursor-pointer select-none group"
                 onMouseMove={handleSliderMouseMove}
                 onMouseLeave={handleSliderMouseLeave}
@@ -1590,11 +2068,15 @@ export default function LocationTimelineClient({
                   </div>
                 )}
 
-                {/* Activity Spectrum Bar */}
-                <div className="relative w-full h-3.5 rounded-full overflow-hidden bg-slate-950 border border-slate-800 flex shadow-inner">
+                {/* Activity Spectrum Bar (Scaled to Zoom Window) */}
+                <div className="relative w-full h-4 rounded-full overflow-hidden bg-slate-950 border border-slate-800 flex shadow-inner">
                   {chapters.map((ch) => {
-                    const segWidth =
-                      ((ch.endIndex - ch.startIndex + 1) / Math.max(1, points.length)) * 100;
+                    // Check intersection with zoomed window
+                    if (ch.endIndex < zoomStartIndex || ch.startIndex > zoomEndIndex) return null;
+                    const segStart = Math.max(zoomStartIndex, ch.startIndex);
+                    const segEnd = Math.min(zoomEndIndex, ch.endIndex);
+                    const segWidth = ((segEnd - segStart + 1) / visiblePointsCount) * 100;
+
                     let bg = 'bg-slate-800';
                     if (ch.type === 'STAY') bg = 'bg-slate-700/60';
                     else if (ch.mode === 'VEHICLE') bg = 'bg-amber-500/80';
@@ -1614,32 +2096,44 @@ export default function LocationTimelineClient({
                     );
                   })}
 
-                  {/* Traveled progress fill overlay */}
-                  <div
-                    style={{
-                      width: `${(playbackIndex / Math.max(1, points.length - 1)) * 100}%`,
-                    }}
-                    className="absolute top-0 bottom-0 left-0 bg-indigo-500/35 border-r-2 border-indigo-400 pointer-events-none"
-                  />
+                  {/* Traveled progress fill overlay in the zoomed window */}
+                  {playbackIndex >= zoomStartIndex && (
+                    <div
+                      style={{
+                        width: `${
+                          ((Math.min(zoomEndIndex, Math.max(zoomStartIndex, playbackIndex)) -
+                            zoomStartIndex) /
+                            visiblePointsCount) *
+                          100
+                        }%`,
+                      }}
+                      className="absolute top-0 bottom-0 left-0 bg-indigo-500/35 border-r-2 border-indigo-400 pointer-events-none"
+                    />
+                  )}
                 </div>
 
-                {/* Invisible input range on top for scrubbing */}
+                {/* Invisible input range on top for scrubbing within the zoomed window */}
                 <input
                   type="range"
-                  min={0}
-                  max={Math.max(0, points.length - 1)}
-                  value={playbackIndex}
+                  min={zoomStartIndex}
+                  max={zoomEndIndex}
+                  value={Math.min(zoomEndIndex, Math.max(zoomStartIndex, playbackIndex))}
                   onChange={(e) => {
                     setIsPlaying(false);
                     setPlaybackIndex(Number(e.target.value));
                   }}
-                  className="absolute inset-x-0 bottom-1.5 w-full h-4 opacity-0 cursor-pointer z-20"
+                  className="absolute inset-x-0 bottom-1.5 w-full h-5 opacity-0 cursor-pointer z-20"
                 />
 
-                {/* Custom glowing scrubber thumb */}
+                {/* Custom glowing scrubber thumb positioned along the zoomed window */}
                 <div
                   style={{
-                    left: `${(playbackIndex / Math.max(1, points.length - 1)) * 100}%`,
+                    left: `${
+                      ((Math.min(zoomEndIndex, Math.max(zoomStartIndex, playbackIndex)) -
+                        zoomStartIndex) /
+                        visiblePointsCount) *
+                      100
+                    }%`,
                   }}
                   className="absolute bottom-3.5 -translate-x-1/2 w-4 h-4 rounded-full bg-white border-2 border-indigo-600 shadow-xl pointer-events-none z-10 ring-4 ring-indigo-500/40"
                 />
@@ -1653,9 +2147,9 @@ export default function LocationTimelineClient({
                     type="button"
                     onClick={() => {
                       setIsPlaying(false);
-                      setPlaybackIndex(0);
+                      setPlaybackIndex(zoomStartIndex);
                     }}
-                    title="Rewind to start"
+                    title="Rewind to start of window"
                     className="p-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition"
                   >
                     <RotateCcw className="w-4 h-4" />
@@ -1718,8 +2212,8 @@ export default function LocationTimelineClient({
                 {/* Center / Right Timestamp & Checkpoint Info */}
                 <div className="flex items-center gap-3 text-xs text-slate-400 font-mono">
                   <span>
-                    {summary.startTime
-                      ? new Date(summary.startTime).toLocaleTimeString([], {
+                    {points[zoomStartIndex]
+                      ? new Date(points[zoomStartIndex].recordedAt).toLocaleTimeString([], {
                           hour: '2-digit',
                           minute: '2-digit',
                         })
@@ -1727,12 +2221,17 @@ export default function LocationTimelineClient({
                   </span>
                   <div className="h-4 w-px bg-slate-800" />
                   <span className="text-white font-semibold">
-                    Checkpoint {playbackIndex + 1} of {points.length}
+                    Checkpoint {playbackIndex + 1} of {points.length}{' '}
+                    {isZoomed && (
+                      <span className="text-indigo-400 text-[11px]">
+                        ({playbackIndex - zoomStartIndex + 1}/{visiblePointsCount} in window)
+                      </span>
+                    )}
                   </span>
                   <div className="h-4 w-px bg-slate-800" />
                   <span>
-                    {summary.endTime
-                      ? new Date(summary.endTime).toLocaleTimeString([], {
+                    {points[zoomEndIndex]
+                      ? new Date(points[zoomEndIndex].recordedAt).toLocaleTimeString([], {
                           hour: '2-digit',
                           minute: '2-digit',
                         })
@@ -1841,7 +2340,7 @@ export default function LocationTimelineClient({
         </div>
       )}
 
-      {/* 4. Geofences List Panel (Active on 'geofences' tab) */}
+      {/* 6. Geofences List Panel (Active on 'geofences' tab) */}
       {activeTab === 'geofences' && (
         <div className="p-5 border-t border-slate-800 bg-slate-950/60 space-y-4">
           <div className="flex items-center justify-between">
@@ -1984,7 +2483,7 @@ export default function LocationTimelineClient({
         </div>
       )}
 
-      {/* 5. Geofence Events Feed (Active on 'events' tab) */}
+      {/* 7. Geofence Events Feed (Active on 'events' tab) */}
       {activeTab === 'events' && (
         <div className="p-5 border-t border-slate-800 bg-slate-950/60 space-y-4">
           <div className="flex items-center justify-between">
@@ -2070,7 +2569,7 @@ export default function LocationTimelineClient({
         </div>
       )}
 
-      {/* 6. Add Geofence Modal */}
+      {/* 8. Add Geofence Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[1000] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5">
